@@ -159,7 +159,14 @@ public class ScreenActivity extends Activity implements SurfaceHolder.Callback, 
         status.setTextColor(Color.WHITE);
         status.setTextSize(13);
         status.setPadding(24, 24, 24, 24);
-        root.addView(status, new FrameLayout.LayoutParams(-2, -2, Gravity.TOP | Gravity.START));
+        FrameLayout.LayoutParams slp = new FrameLayout.LayoutParams(-2, -2, Gravity.TOP | Gravity.START);
+        // clear of the button bar at the screen's edge: a crash's cause is several lines and ran under it
+        if (watchMode) {
+            slp.leftMargin = dp(54);
+        } else {
+            slp.rightMargin = dp(54);
+        }
+        root.addView(status, slp);
         // mid right edge: iOS keeps nothing there on the lock screen, home screen or dock
         // the watch keeps its crown on the right: its bar goes to the left edge
         root.addView(buttonBar(), new FrameLayout.LayoutParams(-2, -2, Gravity.TOP | (watchMode ? Gravity.START : Gravity.END)));
@@ -982,7 +989,8 @@ public class ScreenActivity extends Activity implements SurfaceHolder.Callback, 
                 // QEMU ended by itself: its record (written a moment after the end) says why, and can be reported
                 CrashReport.Record cr = pendingCrash(Guest.os(this));
                 if (cr != null) {
-                    String cause = cr.cause.length() > 220 ? cr.cause.substring(0, 220) + "…" : cr.cause;
+                    // whole (CrashText.cause keeps 600 characters): the pixel format comes at the end of reims' line
+                    String cause = cr.cause;
                     status.setText(name + (cr.crash ? " crashed: " : " stopped by itself: ")
                             + (!why.isEmpty() && !why.equals(cr.cause) ? why + "\n" : "") + cause);
                 } else {

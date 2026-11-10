@@ -58,6 +58,13 @@ final class CrashReport {
     private CrashReport() {}
 
     static final String REPO = "alpersamur3/asoft-ios-android";
+    /**
+     * The issue link's length. Signed out, GitHub sends the link to its sign-in page as return_to, encoded once
+     * more, and drops it when that gets too long (measured 2026-11-10: kept up to a 7,695-character redirect,
+     * dropped at ~7,970), so the user would sign in and land on GitHub's home page. Encoded once more a link
+     * grows at most 5/3 (%XX becomes %25XX): 4,500 stays under that. What does not fit waits on the clipboard.
+     */
+    private static final int MAX_URL = 4500;
     private static final String PREFS = "crash", CHANNEL = "crash";
     private static final int NOTE_ID = 40;
     private static final String MAGIC = "ASoftware crash record", STDERR = "== qemu stderr ==", APPLOG = "== app log of this run ==";
@@ -541,7 +548,7 @@ final class CrashReport {
         }
         String what = r.guest + (r.crash ? " crashed" : " stopped by itself") + " after " + r.uptime + "; QEMU ended with " + r.status;
         List<String> err = scrubAll(r.stderr, pre), app = scrubAll(r.app, pre);
-        return forUrl ? CrashText.fitBody(REPO, reportTitle(r), facts, what, cause, err, app, 7000)
+        return forUrl ? CrashText.fitBody(REPO, reportTitle(r), facts, what, cause, err, app, MAX_URL)
                 : CrashText.body(facts, what, cause, err, app, false);
     }
 

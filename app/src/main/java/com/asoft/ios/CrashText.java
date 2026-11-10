@@ -512,7 +512,8 @@ final class CrashText {
     }
 
     /**
-     * body() as long as its issueUrl() stays within @maxUrl (GitHub refuses longer links): the oldest log lines go
+     * body() as long as its issueUrl() stays within @maxUrl (CrashReport.MAX_URL: GitHub's sign-in drops longer
+     * ones): the oldest log lines go
      * first (fitStderr), QEMU's stderr keeping about two thirds of the room; the cause always stays (cut to 1000
      * characters only when even no log lines would not fit).
      */
