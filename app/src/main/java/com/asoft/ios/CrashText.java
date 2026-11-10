@@ -459,10 +459,62 @@ final class CrashText {
         return s;
     }
 
+    private static int cost(List<String> lines) {
+        int s = 0;
+        for (String l : lines) {
+            s += urlCost(l);
+        }
+        return s;
+    }
+
+    /** The last lines of @lines that fit in @room. */
+    private static List<String> newestOf(List<String> lines, int room) {
+        int[] c = new int[lines.size()];
+        for (int i = 0; i < c.length; i++) {
+            c[i] = urlCost(lines.get(i));
+        }
+        return lines.subList(lines.size() - newest(c, room), lines.size());
+    }
+
+    private static final String TAIL_MARK = "--- the last ";
+
+    /**
+     * evidence()'s lines cut to @room of link. Its first part, reims' warnings and fatal lines from before the tail,
+     * is what a tail of the run's last lines cannot show: it keeps up to half the room (its newest lines, under its
+     * own heading), and the tail's oldest lines go first.
+     */
+    static List<String> fitStderr(List<String> stderr, int room) {
+        int m = -1;
+        for (int i = 0; i < stderr.size() && m < 0; i++) {
+            if (stderr.get(i).startsWith(TAIL_MARK)) {
+                m = i;
+            }
+        }
+        if (m < 0) {
+            return newestOf(stderr, room);
+        }
+        List<String> head = stderr.subList(0, m), tail = stderr.subList(m + 1, stderr.size());
+        List<String> h = head;
+        if (!head.isEmpty() && cost(head) > room / 2) {
+            List<String> rest = newestOf(head.subList(1, head.size()), room / 2 - urlCost(head.get(0)));
+            h = new ArrayList<>();
+            if (!rest.isEmpty()) {
+                h.add(head.get(0));
+                h.addAll(rest);
+            }
+        }
+        List<String> t = newestOf(tail, room - cost(h) - urlCost(TAIL_MARK + tail.size() + " lines ---"));
+        List<String> out = new ArrayList<>(h.size() + t.size() + 1);
+        out.addAll(h);
+        out.add(TAIL_MARK + t.size() + " lines ---");
+        out.addAll(t);
+        return out;
+    }
+
     /**
      * body() as long as its issueUrl() stays within @maxUrl (GitHub refuses longer links): the oldest log lines go
-     * first, QEMU's stderr keeping about two thirds of the room; the cause always stays (cut to 1000 characters
-     * only when even no log lines would not fit).
+     * first (fitStderr), QEMU's stderr keeping about two thirds of the room; the cause always stays (cut to 1000
+     * characters only when even no log lines would not fit).
      */
     static String fitBody(String repo, String title, LinkedHashMap<String, String> facts, String what, String cause,
             List<String> stderr, List<String> app, int maxUrl) {
@@ -477,24 +529,21 @@ final class CrashText {
             return body(facts, what, c, none, none, true);
         }
         int room = maxUrl - base;
-        int[] cs = new int[stderr.size()], ca = new int[app.size()];
-        for (int i = 0; i < cs.length; i++) {
-            cs[i] = urlCost(stderr.get(i));
-        }
+        int[] ca = new int[app.size()];
         for (int i = 0; i < ca.length; i++) {
             ca[i] = urlCost(app.get(i));
         }
-        int s = newest(cs, room * 2 / 3);
-        int a = newest(ca, room - sumNewest(cs, s));
-        s = newest(cs, room - sumNewest(ca, a));       // what the app's log left
+        List<String> err = fitStderr(stderr, room * 2 / 3);
+        int a = newest(ca, room - cost(err));
+        err = fitStderr(stderr, room - sumNewest(ca, a));       // what the app's log left
         while (true) {
-            String b = body(facts, what, cause, stderr.subList(stderr.size() - s, stderr.size()),
-                    app.subList(app.size() - a, app.size()), true);
-            if (issueUrl(repo, title, b).length() <= maxUrl || s == 0 && a == 0) {
+            String b = body(facts, what, cause, err, app.subList(app.size() - a, app.size()), true);
+            if (issueUrl(repo, title, b).length() <= maxUrl || err.isEmpty() && a == 0) {
                 return b;
             }
-            if (s > 0) {
-                s--;
+            // (the costs add up exactly; this is only a guard)
+            if (!err.isEmpty()) {
+                err = err.subList(1, err.size());
             } else {
                 a--;
             }

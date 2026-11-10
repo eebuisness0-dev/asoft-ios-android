@@ -215,6 +215,27 @@ public class CrashTextTest {
     }
 
     @Test
+    public void fitBodyKeepsTheEarlierReimsLines() throws IOException {
+        StringBuilder in = new StringBuilder("reims[warn] create::function: Metal refused the function's IR\n");
+        for (int i = 0; i < 600; i++) {
+            in.append("native-el0: stats line ").append(i).append(" with some more words to make it longer\n");
+        }
+        in.append(FATAL_552).append('\n');
+        List<String> ev = CrashText.evidence(new BufferedReader(new StringReader(in.toString())), 200, 80);
+        LinkedHashMap<String, String> facts = new LinkedHashMap<>();
+        facts.put("App", "0.1.2-dev (4)");
+        String b = CrashText.fitBody("o/r", "t", facts, "w", FATAL_552, ev, Collections.singletonList("app"), 7000);
+        assertTrue(CrashText.issueUrl("o/r", "t", b).length() <= 7000);
+        assertTrue(b, b.contains("reims[warn] create::function"));
+        assertTrue(b, b.contains("--- reims/panic lines before the last 200 lines ---"));
+        // the tail lost its oldest lines, and says how many it kept
+        assertTrue(b, b.contains("stats line 599 with"));
+        assertFalse(b, b.contains("stats line 401 with"));
+        assertFalse(b, b.contains("--- the last 200 lines ---"));
+        assertTrue(b, b.matches("(?s).*--- the last \\d+ lines ---.*"));
+    }
+
+    @Test
     public void fitBodyStaysWithinTheLink() {
         LinkedHashMap<String, String> facts = new LinkedHashMap<>();
         facts.put("App", "0.1.2-dev (4)");

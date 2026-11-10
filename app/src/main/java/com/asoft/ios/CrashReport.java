@@ -539,7 +539,7 @@ final class CrashReport {
         for (Map.Entry<String, String> f : facts.entrySet()) {
             f.setValue(CrashText.scrub(f.getValue(), pre));
         }
-        String what = r.guest + (r.crash ? " crashed" : " stopped by itself") + " (QEMU " + r.status + ") after " + r.uptime;
+        String what = r.guest + (r.crash ? " crashed" : " stopped by itself") + " after " + r.uptime + "; QEMU ended with " + r.status;
         List<String> err = scrubAll(r.stderr, pre), app = scrubAll(r.app, pre);
         return forUrl ? CrashText.fitBody(REPO, reportTitle(r), facts, what, cause, err, app, 7000)
                 : CrashText.body(facts, what, cause, err, app, false);
