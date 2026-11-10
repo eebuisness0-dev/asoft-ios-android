@@ -33,6 +33,9 @@ import java.util.List;
  * corner. Under the devices the few settings of the app itself, and the engine test for comparing phones.
  */
 public class MainActivity extends Activity {
+    /** The crash notification's extra (CrashReport): the record's id, whose report this screen opens. */
+    static final String EXTRA_CRASH = "crash";
+
     private static final int BG = Color.BLACK, LINE = 0xff26262a, TEXT = 0xfff5f5f7, DIM = 0xff8e8e93, FAINT = 0xff636366,
             LINK = 0xff6cb2ff, RED = 0xffff5a50, GREEN = 0xff32d74b, ORANGE = 0xffff9f0a;
 
@@ -43,6 +46,8 @@ public class MainActivity extends Activity {
         DeviceView device;
         View dot;
         TextView status, detail, primary, secondary, back, menu;
+        /** "Report this crash", while the system's last end was its own (CrashReport.pendingFor). */
+        TextView report;
         /** The picture on the device, and the file's time it was read at. */
         Bitmap shot;
         long shotTime;
@@ -99,8 +104,9 @@ public class MainActivity extends Activity {
     private final Runnable follow = new Runnable() {
         @Override
         public void run() {
+            // (a crash record comes a moment after QEMU's end, from its own thread: its notice counts as a change)
             String now = Guest.running() + " " + Guest.state + " " + Guest.os(MainActivity.this) + " " + Guest.saving() + " "
-                    + SetupService.busy() + " " + Guest.startError;
+                    + SetupService.busy() + " " + Guest.startError + " " + CrashReport.pendingKey(MainActivity.this);
             if (!now.equals(shown)) {
                 shown = now;
                 refresh();
@@ -234,6 +240,16 @@ public class MainActivity extends Activity {
         LinearLayout.LayoutParams dtl = top(new LinearLayout.LayoutParams(-1, -2), dp(8));
         dtl.rightMargin = dp(8);
         c.detail.setLayoutParams(dtl);
+
+        c.report = link("Report this crash", RED, v -> {
+            if (v.getTag() instanceof CrashReport.Record) {
+                CrashReport.show(this, (CrashReport.Record) v.getTag());
+            }
+        });
+        c.report.setTextSize(13.5f);
+        c.report.setPadding(0, dp(8), dp(8), dp(2));
+        c.report.setVisibility(View.GONE);
+        col.addView(c.report, new LinearLayout.LayoutParams(-2, -2));
 
         LinearLayout actions = new LinearLayout(this);
         actions.setOrientation(LinearLayout.HORIZONTAL);
@@ -404,6 +420,27 @@ public class MainActivity extends Activity {
         if (saved == null && !Guest.available(this) && !Guest.available26(this)) {
             startActivity(new Intent(this, SetupActivity.class));   // first start: set up first
         }
+        if (saved == null) {
+            showCrashOf(getIntent());
+        }
+    }
+
+    /** Opened again from the crash notification (CLEAR_TOP | SINGLE_TOP): its report. */
+    @Override
+    protected void onNewIntent(Intent i) {
+        super.onNewIntent(i);
+        setIntent(i);
+        showCrashOf(i);
+    }
+
+    /** The report of the crash notification @i came from (its record, else the newest). */
+    private void showCrashOf(Intent i) {
+        if (i == null || !i.hasExtra(EXTRA_CRASH)) {
+            return;
+        }
+        String id = i.getStringExtra(EXTRA_CRASH);
+        i.removeExtra(EXTRA_CRASH);
+        CrashReport.show(this, CrashReport.byId(this, id));
     }
 
     @Override
@@ -532,12 +569,17 @@ public class MainActivity extends Activity {
         if (os != Guest.IOS16) {
             m.getMenu().add(0, 3, 0, "Memory: " + Guest.ramMiB(this, os) / 1024 + " GB");
         }
+        CrashReport.Record crash = CrashReport.latestFor(this, os);     // (three small files)
+        if (crash != null) {
+            m.getMenu().add(0, 5, 0, "Report the last crash…");
+        }
         m.getMenu().add(0, 4, 0, os == Guest.WATCH ? "Erase the watch…" : "Erase the iPhone…");
         m.setOnMenuItemClickListener(item -> {
             switch (item.getItemId()) {
                 case 1: bootCold(os); break;
                 case 2: chooseScale26(); break;
                 case 3: chooseRam(os); break;
+                case 5: CrashReport.show(this, crash); break;
                 default: askErase(os);
             }
             return true;
@@ -629,6 +671,22 @@ public class MainActivity extends Activity {
         if (snap != null) {
             c.back.setText("Go back to the save of " + nice(snap.date));
         }
+    }
+
+    /** Shows @c's "Report this crash" for @r (null: hides it). */
+    private static void showCrash(Panel c, CrashReport.Record r) {
+        c.report.setTag(r);
+        c.report.setVisibility(r == null ? View.GONE : View.VISIBLE);
+    }
+
+    /** The detail's first line for a system whose last end was its own: "Crashed at 23:10: <short cause>". */
+    private static String crashLine(CrashReport.Record r) {
+        if (r == null) {
+            return "";
+        }
+        String when = nice(r.time);
+        when = when.startsWith("today ") ? "at " + when.substring(6) : when;
+        return (r.crash ? "Crashed " : "Stopped by itself ") + when + ": " + CrashText.shortCause(r.cause) + "\n";
     }
 
     /** The way back after a Turn off: the quick save it kept loads, into the running @os or as its start. */
@@ -865,6 +923,7 @@ public class MainActivity extends Activity {
                     + (debug ? " (No " + new File(Guest.dir26(this), missing).getName() + ".)" : ""));
             buttons(c, busy ? "Show" : "Set up", false);
             showBack(c, null);
+            showCrash(c, null);
             c.device.show(null, false, false);
             return;
         }
@@ -874,6 +933,7 @@ public class MainActivity extends Activity {
             detail(c, what == null ? "" : what);
             buttons(c, "Open", false);
             showBack(c, null);
+            showCrash(c, null);
             return;
         }
         boolean starting = starting(Guest.IOS26);
@@ -901,13 +961,15 @@ public class MainActivity extends Activity {
                 st = "Ready";
                 info = "Starts with a boot: about 3 min, then slow for about 15 min while iOS finishes starting.";
             }
-            String text = (error(Guest.IOS26, up) + info).trim();
+            CrashReport.Record crash = up ? null : CrashReport.pendingFor(this, Guest.IOS26);
+            String text = (crashLine(crash) + error(Guest.IOS26, up) + info).trim();
             String statusText = st + (twoX && !up ? "  ·  2x screen" : "");
             Bitmap shot = shot(c);
             runOnUiThread(() -> {
                 state(c, starting ? STARTING : up ? RUNNING : READY, statusText);
                 detail(c, text);
                 showBack(c, back);
+                showCrash(c, crash);
                 c.device.show(shot, true, up);
             });
         }, "home-refresh26").start();
@@ -919,6 +981,7 @@ public class MainActivity extends Activity {
         boolean have = WatchProfile.available(this);
         c.root.setVisibility(have ? View.VISIBLE : View.GONE);
         if (!have) {
+            showCrash(c, null);
             return;
         }
         boolean up = Guest.running() && Guest.os(this) == Guest.WATCH;
@@ -946,12 +1009,14 @@ public class MainActivity extends Activity {
                 st = "Ready";
                 info = "Starts with a boot: 5 to 7 min to the watch face.";
             }
-            String text = (error(Guest.WATCH, up) + info).trim();
+            CrashReport.Record crash = up ? null : CrashReport.pendingFor(this, Guest.WATCH);
+            String text = (crashLine(crash) + error(Guest.WATCH, up) + info).trim();
             Bitmap shot = shot(c);
             runOnUiThread(() -> {
                 state(c, starting ? STARTING : up ? RUNNING : READY, st);
                 detail(c, text);
                 showBack(c, back);
+                showCrash(c, crash);
                 c.device.show(shot, true, up);
             });
         }, "home-refresh-watch").start();
@@ -967,6 +1032,7 @@ public class MainActivity extends Activity {
             buttons(c, "Show", false);
             c.menu.setVisibility(View.INVISIBLE);
             showBack(c, null);
+            showCrash(c, null);
             c.device.show(null, false, false);
             return;
         }
@@ -975,6 +1041,7 @@ public class MainActivity extends Activity {
             detail(c, "Installs from Apple's servers on this phone (about 1.5 hours), or comes from your PC.");
             buttons(c, "Set up", false);
             showBack(c, null);
+            showCrash(c, null);
             c.device.show(null, false, false);
             return;
         }
@@ -1007,12 +1074,14 @@ public class MainActivity extends Activity {
             if (!Guest.nativeMissing().isEmpty()) {
                 info += " This phone's CPU runs iOS in emulation only, much slower (it lacks ARMv8.2's " + Guest.nativeMissing() + ").";
             }
-            String text = (error(Guest.IOS16, up) + info).trim();
+            CrashReport.Record crash = up ? null : CrashReport.pendingFor(this, Guest.IOS16);
+            String text = (crashLine(crash) + error(Guest.IOS16, up) + info).trim();
             Bitmap shot = shot(c);
             runOnUiThread(() -> {
                 state(c, starting ? STARTING : up ? RUNNING : READY, st);
                 detail(c, text);
                 showBack(c, back);
+                showCrash(c, crash);
                 c.device.show(shot, true, up);
             });
         }, "home-refresh").start();

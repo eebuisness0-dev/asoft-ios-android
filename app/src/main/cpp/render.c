@@ -14,6 +14,7 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
@@ -183,12 +184,50 @@ Java_com_asoft_ios_Render_spawn(JNIEnv *env, jclass cls, jobjectArray jargv, job
     return pid;
 }
 
-/* true while @pid lives; reaps it when it has ended */
+/*
+ * How the last few children ended (their raw wait status), kept by the alive() that reaped them: many
+ * threads ask alive() and any of them may be the one that reaps QEMU, while the crash report needs to know
+ * whether it ended with an exit code or a signal.
+ */
+#define ENDS 8
+static struct { int pid, status; } ends[ENDS];
+static int ends_next;
+static pthread_mutex_t ends_lock = PTHREAD_MUTEX_INITIALIZER;
+
+/* true while @pid lives; reaps it when it has ended, and keeps how it ended for endStatus() */
 JNIEXPORT jboolean JNICALL
 Java_com_asoft_ios_Render_alive(JNIEnv *env, jclass cls, jint pid)
 {
     int st;
-    return pid > 0 && waitpid(pid, &st, WNOHANG) == 0;
+    if (pid <= 0) {
+        return JNI_FALSE;
+    }
+    pid_t r = waitpid(pid, &st, WNOHANG);
+    if (r == pid) {
+        pthread_mutex_lock(&ends_lock);
+        ends[ends_next].pid = pid;
+        ends[ends_next].status = st;
+        ends_next = (ends_next + 1) % ENDS;
+        pthread_mutex_unlock(&ends_lock);
+    }
+    return r == 0;
+}
+
+/* the raw wait status @pid ended with (the newest one kept for it), or -1 when it was not seen ending */
+JNIEXPORT jint JNICALL
+Java_com_asoft_ios_Render_endStatus(JNIEnv *env, jclass cls, jint pid)
+{
+    int st = -1;
+    pthread_mutex_lock(&ends_lock);
+    for (int i = 1; i <= ENDS; i++) {
+        int k = (ends_next - i + ENDS) % ENDS;
+        if (pid > 0 && ends[k].pid == pid) {
+            st = ends[k].status;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&ends_lock);
+    return st;
 }
 
 JNIEXPORT void JNICALL

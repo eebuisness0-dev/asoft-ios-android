@@ -38,6 +38,11 @@ public class ScreenActivity extends Activity implements SurfaceHolder.Callback, 
     private int fbPid = -1;             // the QEMU whose framebuffer is mapped
     private long lastTry;
     private Button restart;
+    /** Under restart when the guest ended by itself: the crash report (CrashReport.show). */
+    private Button report;
+    /** The pending crash record shown, and what it was read for (the os, its notice, the newest record's time). */
+    private CrashReport.Record crash;
+    private String crashFor;
     /** watchOS: the picture sits in a drawn watch (WatchCase), whose crown and side button are the watch's. */
     private boolean watchMode;
     private WatchCase watchCase;
@@ -168,6 +173,7 @@ public class ScreenActivity extends Activity implements SurfaceHolder.Callback, 
         restart.setVisibility(View.GONE);
         restart.setOnClickListener(v -> {
             restart.setVisibility(View.GONE);
+            report.setVisibility(View.GONE);
             if (Qmp.noSpace && Guest.running()) {
                 // paused on a full disk: go on (QEMU pauses again, and says so, if there is still no room)
                 Qmp.noSpace = false;
@@ -182,6 +188,13 @@ public class ScreenActivity extends Activity implements SurfaceHolder.Callback, 
             GuestService.start(this);
         });
         root.addView(restart, new FrameLayout.LayoutParams(-2, -2, Gravity.CENTER));
+        report = new Button(this);
+        report.setText("Report this crash");
+        report.setVisibility(View.GONE);
+        report.setOnClickListener(v -> CrashReport.show(this, crash));
+        FrameLayout.LayoutParams rlp = new FrameLayout.LayoutParams(-2, -2, Gravity.CENTER);
+        rlp.topMargin = Math.round(64 * getResources().getDisplayMetrics().density);     // below restart
+        root.addView(report, rlp);
         setContentView(root);
         view.setOnTouchListener(this::onTouch);
         renderThread = new HandlerThread("render");
@@ -206,6 +219,7 @@ public class ScreenActivity extends Activity implements SurfaceHolder.Callback, 
         super.onNewIntent(i);
         if (!Guest.running() && !Guest.saving() && !closing && !"preparing".equals(Guest.state)) {
             restart.setVisibility(View.GONE);
+            report.setVisibility(View.GONE);
             status.setText("starting");
             GuestService.start(this);
         }
@@ -606,6 +620,7 @@ public class ScreenActivity extends Activity implements SurfaceHolder.Callback, 
                 .setPositiveButton("Load", (d, w) -> {
                     status.setText("Loading \"" + snap.label() + "\"…");
                     restart.setVisibility(View.GONE);
+                    report.setVisibility(View.GONE);
                     GuestService.load(this, snap.tag);
                 })
                 .setNeutralButton("Delete", (d, w) -> new android.app.AlertDialog.Builder(this)
@@ -633,6 +648,7 @@ public class ScreenActivity extends Activity implements SurfaceHolder.Callback, 
                     Guest.goBack(this, os, snap.tag);
                     status.setText("Going back to " + when(snap) + "…");
                     restart.setVisibility(View.GONE);
+                    report.setVisibility(View.GONE);
                     GuestService.load(this, snap.tag);
                 })
                 .setNegativeButton("Cancel", null)
@@ -853,6 +869,19 @@ public class ScreenActivity extends Activity implements SurfaceHolder.Callback, 
 
     // -- the guest: open its framebuffer and QMP once it is up
 
+    /**
+     * @os's pending crash record (CrashReport.pendingFor), read again only when its notice or the newest record
+     * changed: doFrame asks once a second while the guest is stopped.
+     */
+    private CrashReport.Record pendingCrash(int os) {
+        String key = os + " " + CrashReport.pendingId(this, os) + " " + CrashReport.file(this, 0).lastModified();
+        if (!key.equals(crashFor)) {
+            crashFor = key;
+            crash = CrashReport.pendingFor(this, os);
+        }
+        return crash;
+    }
+
     @Override
     public void doFrame(long frameTimeNanos) {
         Choreographer.getInstance().postFrameCallback(this);
@@ -922,6 +951,7 @@ public class ScreenActivity extends Activity implements SurfaceHolder.Callback, 
                         getFilesDir().getUsableSpace() / 1e9, Guest.osName(Guest.os(this))));
                 restart.setText("Continue");
                 restart.setVisibility(View.VISIBLE);
+                report.setVisibility(View.GONE);
             }
         } else if ("resuming".equals(Guest.state) || "switching".equals(Guest.state)) {
             status.setText("Loading the saved " + Guest.osName(Guest.os(this)) + "…");
@@ -930,6 +960,7 @@ public class ScreenActivity extends Activity implements SurfaceHolder.Callback, 
             String what = Guest.preparing;
             status.setText(what == null ? "starting" : what);
             restart.setVisibility(View.GONE);
+            report.setVisibility(View.GONE);
         } else if (!closing && status.getText().length() > 0 && fbPid == Guest.pid(this)
                 && ("running".equals(Guest.state) || "booting".equals(Guest.state))) {
             status.setText("");
@@ -943,12 +974,22 @@ public class ScreenActivity extends Activity implements SurfaceHolder.Callback, 
                 if (err != null) {
                     status.setText(name + " did not start: " + err);
                     restart.setVisibility(View.VISIBLE);
+                    report.setVisibility(View.GONE);
                     fbPid = -1;
                     return;
                 }
                 String why = Guest.stopReason(this);
-                status.setText(name + " stopped" + (why.isEmpty() ? "" : ": " + why));
+                // QEMU ended by itself: its record (written a moment after the end) says why, and can be reported
+                CrashReport.Record cr = pendingCrash(Guest.os(this));
+                if (cr != null) {
+                    String cause = cr.cause.length() > 220 ? cr.cause.substring(0, 220) + "…" : cr.cause;
+                    status.setText(name + (cr.crash ? " crashed: " : " stopped by itself: ")
+                            + (!why.isEmpty() && !why.equals(cr.cause) ? why + "\n" : "") + cause);
+                } else {
+                    status.setText(name + " stopped" + (why.isEmpty() ? "" : ": " + why));
+                }
                 restart.setVisibility(View.VISIBLE);
+                report.setVisibility(cr != null ? View.VISIBLE : View.GONE);
                 if (fbPid != -1) {
                     render.post(Render::clear);     // not the stopped guest's last frame
                 }
@@ -963,6 +1004,7 @@ public class ScreenActivity extends Activity implements SurfaceHolder.Callback, 
             fbPid = err == null ? pid : -1;
             status.setText(err == null ? "" : "starting: " + err);
             restart.setVisibility(View.GONE);
+            report.setVisibility(View.GONE);
         }
         if (fbPid == pid && attached) {
             int w = surfW, h = surfH;

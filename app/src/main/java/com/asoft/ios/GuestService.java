@@ -90,6 +90,33 @@ public class GuestService extends Service {
             }, "guest-poweroff").start();
             return START_NOT_STICKY;
         }
+        if ("crashtest".equals(action)) {   // debug builds: a stand-in QEMU that aborts (Guest.startCrashTest)
+            if (Guest.running()) {
+                // this service keeps that iOS: stopping it would end iOS
+                foreground(Guest.osName(Guest.os(this)) + " is running");
+                note("crash test: not while " + Guest.osName(Guest.os(this)) + " runs");
+                return START_NOT_STICKY;
+            }
+            foreground("Crash test");
+            new Thread(() -> {
+                try {
+                    Guest.startCrashTest(this);
+                    for (int i = 0; i < 300 && Guest.running(); i++) {
+                        Thread.sleep(100);
+                    }
+                    CrashReport.awaitCapture(15_000);
+                } catch (IOException e) {
+                    note("crash test: " + e.getMessage());
+                } catch (InterruptedException e) {
+                    // stop anyway
+                }
+                if (!Guest.running()) {
+                    stopForeground(STOP_FOREGROUND_REMOVE);
+                    stopSelf();
+                }
+            }, "crash-test").start();
+            return START_NOT_STICKY;
+        }
         if ("off".equals(action)) {     // QEMU stopped at once, no save, no shutdown (adb tests)
             foreground("Turning iOS off");
             Guest.stop();

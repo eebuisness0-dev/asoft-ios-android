@@ -940,6 +940,7 @@ final class PhoneSetup26 {
     private static boolean endBoot(Context c, GuestConsole con) {
         boolean synced = con != null && con.run("sync", 180_000, 60_000) != null;
         Qmp q = Guest.qmp();
+        Guest.willEnd();        // this quit is the setup's: no crash record
         if (q != null) {
             q.call("{\"execute\":\"quit\"}", 10_000);
         }
