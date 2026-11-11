@@ -102,10 +102,43 @@ public class SetupActivity extends Activity {
         return b;
     }
 
+    /** The notice of a record not seen yet (RecordNotice), but the one a failed step or import shows under its line. */
+    private RecordNotice notice;
+    /** The record of the last import that failed, shown under its status line. */
+    private volatile String importRecord;
+
     private void show() {
         box.removeAllViews();
-        TextView title = text("Set up", 26, Color.WHITE);
+        // the title, and Logs beside it: there on a fresh app too, where a failed first setup has nothing else to show
+        LinearLayout head = new LinearLayout(this);
+        head.setOrientation(LinearLayout.HORIZONTAL);
+        head.setGravity(Gravity.CENTER_VERTICAL);
+        head.setPadding(0, 0, 0, 28);
+        TextView title = new TextView(this);
+        title.setText("Set up");
+        title.setTextSize(26);
+        title.setTextColor(Color.WHITE);
         title.setTypeface(Typeface.DEFAULT_BOLD);
+        head.addView(title, new LinearLayout.LayoutParams(0, -2, 1));
+        Button logs = new Button(this);
+        logs.setText("Logs");
+        logs.setAllCaps(false);
+        logs.setOnClickListener(v -> startActivity(new Intent(this, LogsActivity.class)));
+        head.addView(logs, new LinearLayout.LayoutParams(-2, -2));
+        box.addView(head);
+        if (notice == null) {
+            notice = new RecordNotice(this, () -> {
+                SetupService.State s = SetupService.state;
+                return s.error != null && s.record != null ? s.record : importRecord;
+            });
+        }
+        View n = notice.view();
+        if (n.getParent() instanceof android.view.ViewGroup) {
+            ((android.view.ViewGroup) n.getParent()).removeView(n);
+        }
+        LinearLayout.LayoutParams nlp = new LinearLayout.LayoutParams(-1, -2);
+        nlp.bottomMargin = 28;
+        box.addView(n, nlp);
         if (Installer.installed(this)) {
             text("iOS 16 is set up on this phone. Importing or installing again replaces it: this iPhone's settings, apps and saves go.",
                     15, 0xffbbbbbb);
@@ -211,7 +244,10 @@ public class SetupActivity extends Activity {
         }
         bar.setVisibility(View.VISIBLE);
         status.setText("Starting… keep this screen open.");
+        importRecord = null;
         long t0 = System.currentTimeMillis();
+        long logAt = new java.io.File(Guest.runDir(this), "app.txt").length();
+        AppExit.begin(this, AppExit.IMPORT, "an import from the PC was running");
         new Thread(() -> {
             String result;
             try (InputStream s = in) {
@@ -230,6 +266,10 @@ public class SetupActivity extends Activity {
                         (System.currentTimeMillis() - t0) / 1000, notes.isEmpty() ? "" : "\n" + notes);
             } catch (IOException | RuntimeException e) {
                 result = "Not set up: " + e.getMessage();
+                AppLog.note(this, "import stopped: " + e);
+                importRecord = SetupRecord.writeImport(this, e.getMessage(), e, total, logAt, t0);
+            } finally {
+                AppExit.end(this, AppExit.IMPORT);
             }
             String r = result;
             runOnUiThread(() -> finishRun(r));
@@ -241,6 +281,32 @@ public class SetupActivity extends Activity {
         getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         show();
         status.setText(result);
+        String id = importRecord;
+        if (id != null) {
+            // under the failed import's line: its log, as under a failed setup step
+            LinearLayout row = new LinearLayout(this);
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            Button share = new Button(this), report = new Button(this);
+            share.setText("Share log");
+            report.setText("Report on GitHub");
+            for (Button b : new Button[] {share, report}) {
+                b.setAllCaps(false);
+                row.addView(b, new LinearLayout.LayoutParams(0, -2, 1));
+            }
+            share.setOnClickListener(v -> {
+                CrashReport.Record rec = CrashReport.find(this, id);
+                if (rec != null) {
+                    CrashReport.share(this, rec);
+                }
+            });
+            report.setOnClickListener(v -> {
+                CrashReport.Record rec = CrashReport.find(this, id);
+                if (rec != null) {
+                    CrashReport.openIssue(this, rec);
+                }
+            });
+            box.addView(row);
+        }
         if (Installer.installed(this) && result.startsWith("iOS 16 is set up")) {
             Guest.select(this, Guest.IOS16);
             button("Start iOS 16 (the first start takes a few minutes)", v -> {

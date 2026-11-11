@@ -12,7 +12,8 @@ import java.util.List;
 import java.util.Set;
 
 /**
- * "Free memory while iOS runs": every 90 s, while iOS runs and only then, the background processes
+ * "Free memory while iOS runs": every 90 s, while iOS runs, and once before a setup's helper VM job on a phone
+ * short of memory (beforeHelper), the background processes
  * of the phone's other apps are ended the way Android ends them when memory runs short: not a force
  * stop, so their alarms, jobs and notifications stay, but an app left in the background starts afresh
  * when opened. iOS needs 4 to 8 GB, and a save writes 3 GB more, which Android otherwise answers by
@@ -139,6 +140,23 @@ final class MemoryCleaner {
         }
         try {
             round(c, "free memory before the save", 10_000);
+        } finally {
+            busy.set(false);
+        }
+    }
+
+    /**
+     * One round before a helper VM job on a phone short of memory (Helper.beforeJob), when the user has this on:
+     * the setup's build needs its memory as iOS does, and Android's memory killer ends the VM half way otherwise.
+     * True when a round ran.
+     */
+    static boolean beforeHelper(Context c) {
+        if (!enabled(c) || !busy.compareAndSet(false, true)) {
+            return false;
+        }
+        try {
+            round(c, "free memory before the helper VM", 30_000);
+            return true;
         } finally {
             busy.set(false);
         }

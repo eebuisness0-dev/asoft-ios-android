@@ -36,6 +36,7 @@ public class SetupService extends Service {
         volatile int pct = -1;
         volatile String text = "";
         volatile String error;                  // why it stopped, in plain words; null while it runs or when done
+        volatile String record;                 // the record of that stop (SetupRecord), for the screens' Share log; null without one
         volatile boolean running, paused, waitingForWifi, waitingForNetwork, finished, held;
         volatile String target = "ios16";       // "ios16" (PhoneSetup) or "a26" (PhoneSetup26: iOS 26 and/or watchOS)
         volatile List<IpswFetch.Item> items = new ArrayList<>();
@@ -243,15 +244,30 @@ public class SetupService extends Service {
         return !online && downloadLeft();
     }
 
+    /** When the step that runs now started: its failed helper runs since then go into its record (SetupRecord). */
+    private volatile long stepSince;
+
+    /** "the iOS 16 setup", "the iOS 26 and watchOS setup": what runs, for the app's own end (AppExit). */
+    private String setupName(boolean a26) {
+        if (!a26) {
+            return "the iOS 16 setup";
+        }
+        boolean i26 = PhoneSetup26.wants(this, PhoneSetup26.IOS26), w = PhoneSetup26.wants(this, PhoneSetup26.WATCH);
+        return "the " + (i26 && w ? "iOS 26 and watchOS" : w ? "watchOS" : "iOS 26") + " setup";
+    }
+
     private void begin() {
         if (Guest.running()) {
             state.error = "Close iOS first (side bar > Saves > Save and close): the setup needs its memory.";
+            state.record = null;
             post(state.error, -1);
             stopSelf();
             return;
         }
         cancel = false;
         state.error = null;
+        state.record = null;
+        Helper.memoryNote = null;
         state.finished = false;
         state.running = true;
         state.paused = false;
@@ -270,6 +286,10 @@ public class SetupService extends Service {
         };
         worker = new Thread(() -> {
             long t0 = System.currentTimeMillis();
+            // where this run's lines start in the app's log, for a record of its end
+            long logAt = new File(Guest.runDir(this), "app.txt").length();
+            stepSince = t0;
+            AppExit.begin(this, AppExit.SETUP, setupName(a26) + " was running");
             AppLog.note(this, "setup: start (" + getFilesDir().getUsableSpace() / 1_000_000_000L + " GB free)");
             try {
                 while (!cancel) {
@@ -313,6 +333,13 @@ public class SetupService extends Service {
                         }
                         state.error = plain(e);
                         AppLog.note(this, "setup stopped: " + e);
+                        state.record = SetupRecord.write(this, a26, state.step, state.pct, state.text, e, state.error, logAt, stepSince, t0);
+                        break;
+                    } catch (RuntimeException e) {
+                        // a bug of the app's: the setup stops with it, the app stays (a Resume tries again)
+                        state.error = "The setup stopped on an error of the app's (" + e + "). Tap Resume to try again; please share the log.";
+                        AppLog.note(this, "setup stopped: " + e);
+                        state.record = SetupRecord.write(this, a26, state.step, state.pct, state.text, e, state.error, logAt, stepSince, t0);
                         break;
                     }
                 }
@@ -334,6 +361,8 @@ public class SetupService extends Service {
                 state.paused = false;
                 state.held = false;
                 Helper.hold = null;
+                Helper.memoryNote = null;
+                AppExit.end(this, AppExit.SETUP);
                 worker = null;
                 if (state.finished) {
                     post(a26 ? "Set up: open ASoftware iOS and choose iOS 26 or watchOS" : "iOS 16 is set up: open ASoftware iOS and tap Start iOS 16", 100);
@@ -372,10 +401,20 @@ public class SetupService extends Service {
 
             String loggedStep = "";
             int loggedPct = -100;
+            /** The step of the last call, null before the first. */
+            String stepWas;
 
             @Override
             public void step(String step, int pct, String text) {
                 // the app's log keeps where the run is: each step's start, then every 10 % (adb reads it)
+                if (!step.equals(stepWas)) {
+                    // (the run's first step counts from the run's start: begin() set that)
+                    if (stepWas != null) {
+                        stepSince = System.currentTimeMillis();
+                    }
+                    stepWas = step;
+                    AppExit.detail(SetupService.this, AppExit.SETUP, SetupRecord.label("a26".equals(state.target), step));
+                }
                 if (!step.equals(loggedStep) || (pct >= 0 && pct >= loggedPct + 10)) {
                     loggedStep = step;
                     loggedPct = pct;

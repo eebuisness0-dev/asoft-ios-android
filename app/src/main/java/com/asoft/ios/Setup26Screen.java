@@ -50,7 +50,9 @@ final class Setup26Screen {
     private final Activity a;
     private final LinearLayout root;
     private final Handler h = new Handler(Looper.getMainLooper());
-    private TextView gpu, free, total, details, error;
+    private TextView gpu, free, total, details, error, memory;
+    /** Share log and Report on GitHub under a failed step's red line (SetupScreen.logButtons). */
+    private View errorButtons;
     private ProgressBar totalBar;
     private LinearLayout gpuButtons, choice, files, steps;
     private CheckBox want26, wantWatch;
@@ -155,6 +157,9 @@ final class Setup26Screen {
         steps = card(root, 24);
         error = text(root, "", 15, RED);
         error.setPadding(8, 24, 8, 0);
+        errorButtons = SetupScreen.logButtons(a, root, () -> SetupService.state.record);
+        memory = text(root, "", 13, GRAY);
+        memory.setPadding(8, 16, 8, 0);
 
         LinearLayout buttons = new LinearLayout(a);
         buttons.setOrientation(LinearLayout.HORIZONTAL);
@@ -423,6 +428,10 @@ final class Setup26Screen {
             }
         }
 
+        errorButtons.setVisibility(mine() && !running && s.error != null && s.record != null ? View.VISIBLE : View.GONE);
+        String note = Helper.memoryNote;
+        memory.setText(note == null ? "" : note);
+        memory.setVisibility(running && note != null ? View.VISIBLE : View.GONE);
         if (mine() && s.error != null) {
             error.setText(s.error);
             error.setTextColor(RED);

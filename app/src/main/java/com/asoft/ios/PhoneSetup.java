@@ -386,7 +386,7 @@ final class PhoneSetup {
         disks.add(new Helper.Disk("in", in, "raw", true));
         disks.add(new Helper.Disk("out", o, "raw", false));
         disks.add(new Helper.Disk("ipsw", ipsw, "raw", true));
-        Helper.Result r = Helper.run(c, "run", disks, Math.min(cpus, 4), jd, new Helper.Listener() {
+        Helper.Listener l = new Helper.Listener() {
             @Override
             public void progress(int pct, String text) {
                 p.step("payload", pct, text);
@@ -396,9 +396,18 @@ final class PhoneSetup {
             public void line(String text) {
                 p.log(text);
             }
-        }, cancelled);
-        if (r.rc != 0 || r.outBytes <= 0) {
-            throw new IOException("making the kernel failed (" + r.last + ")");
+        };
+        Helper.Result r = Helper.run(c, "run", disks, Math.min(cpus, 4), jd, l, cancelled, true, Helper.ramMiB(c, Helper.FLOOR_IOS16));
+        if (Helper.worthRetry(r, Helper.FLOOR_IOS16) && !cancelled.getAsBoolean()) {
+            int ram = Helper.retryRam(r, Helper.FLOOR_IOS16);
+            AppLog.note(c, "setup: the kernel job failed (" + r.failure() + "); again under TCG with " + ram + " MiB");
+            r = Helper.run(c, "run", disks, Math.min(cpus, 4), jd, l, cancelled, false, ram);
+        }
+        if (r.rc != 0) {
+            throw new IOException("making the kernel failed: " + r.failure());
+        }
+        if (r.outBytes <= 0) {
+            throw new IOException("making the kernel failed: the helper VM handed nothing back");
         }
         File got = new File(jd, "got");
         TarIo.read(o, r.outBytes, got);
@@ -427,10 +436,12 @@ final class PhoneSetup {
         disks.add(new Helper.Disk("ipsw", ipsw, "raw", true));
         disks.add(new Helper.Disk("root", root, "qcow2", false));
         disks.add(new Helper.Disk("scratch", scratch, "qcow2", false));
-        Helper.Result r = buildRoot(c, disks, cpus, root, ipsw, p, cancelled, true);
-        if (r.rc != 0 && r.nat && !cancelled.getAsBoolean() && ipsw.length() > 0) {
-            // the native engine for Linux is new (2026-11-08): once more under TCG, as on the PC
-            AppLog.note(c, "setup: the disk job failed with the native engine (" + r.last + "); again under TCG");
+        Helper.Result r = buildRoot(c, disks, cpus, root, ipsw, p, cancelled, true, Helper.ramMiB(c, Helper.FLOOR_IOS16));
+        if (Helper.worthRetry(r, Helper.FLOOR_IOS16) && !cancelled.getAsBoolean() && ipsw.length() > 0) {
+            // the native engine for Linux is new (2026-11-08): once more under TCG, as on the PC; after Android's
+            // memory killer with less RAM too
+            int ram = Helper.retryRam(r, Helper.FLOOR_IOS16);
+            AppLog.note(c, "setup: the disk job failed (" + r.failure() + ", " + r.how() + "); again under TCG with " + ram + " MiB");
             for (File f : new File[] {root, scratch}) {
                 f.delete();
             }
@@ -440,17 +451,17 @@ final class PhoneSetup {
                     throw new IOException("qemu-img create failed: " + q[1].trim());
                 }
             }
-            r = buildRoot(c, disks, cpus, root, ipsw, p, cancelled, false);
+            r = buildRoot(c, disks, cpus, root, ipsw, p, cancelled, false, ram);
         }
         if (r.rc != 0) {
             root.delete();
             scratch.delete();
-            throw new IOException("building the iOS disk failed (" + r.last + ")");
+            throw new IOException("building the iOS disk failed: " + r.failure());
         }
     }
 
     private static Helper.Result buildRoot(Context c, List<Helper.Disk> disks, int cpus, File root, File ipsw, Progress p,
-            BooleanSupplier cancelled, boolean allowNative) throws IOException {
+            BooleanSupplier cancelled, boolean allowNative, int ramMiB) throws IOException {
         return Helper.run(c, "build-root", disks, cpus, new File(work(c), "disk-job"), new Helper.Listener() {
             boolean dropped;
 
@@ -478,6 +489,6 @@ final class PhoneSetup {
             public void line(String text) {
                 p.log(text);
             }
-        }, cancelled, allowNative);
+        }, cancelled, allowNative, ramMiB);
     }
 }

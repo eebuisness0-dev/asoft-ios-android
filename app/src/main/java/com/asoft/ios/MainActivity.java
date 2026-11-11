@@ -59,7 +59,7 @@ public class MainActivity extends Activity {
 
     private LinearLayout box;
     private final Panel p26 = new Panel(Guest.IOS26), p16 = new Panel(Guest.IOS16), pWatch = new Panel(Guest.WATCH);
-    private TextView powerWarn, freeRamValue, wadbValue, updateValue, footer, engineLog;
+    private TextView powerWarn, freeRamValue, wadbValue, updateValue, logsValue, footer, engineLog;
     private LinearLayout updateBar, advanced;
     private TextView updateText, updateNote, updateGet, updateDismiss;
     /**
@@ -362,6 +362,10 @@ public class MainActivity extends Activity {
         box.addView(brand, blp);
 
         addUpdateBar();
+        // a setup that failed or the app's own end the user has not seen yet (RecordNotice): asks for its log
+        LinearLayout.LayoutParams nlp = new LinearLayout.LayoutParams(-1, -2);
+        nlp.bottomMargin = dp(12);
+        box.addView(new RecordNotice(this, null).view(), nlp);
         // power saving slows iOS several times over: say so above everything else
         powerWarn = banner(0xff241b0b, ORANGE);
         powerWarn.setOnClickListener(v -> PowerCheck.openSettings(this));
@@ -387,6 +391,7 @@ public class MainActivity extends Activity {
             UpdateCheck.check(this, this::showUpdate);
         });
         row(settings, "Set up or add a system", v -> startActivity(new Intent(this, SetupActivity.class)));
+        logsValue = row(settings, "Logs", v -> startActivity(new Intent(this, LogsActivity.class)));
         row(settings, "Engine test", v -> advanced.setVisibility(advanced.getVisibility() == View.VISIBLE ? View.GONE : View.VISIBLE));
 
         advanced = new LinearLayout(this);
@@ -1194,6 +1199,8 @@ public class MainActivity extends Activity {
     private void showSettings() {
         boolean can = MemoryCleaner.supported(this);
         freeRamValue.setText(can ? MemoryCleaner.enabled(this) ? "On" : "Off" : "Pair first");
+        int records = CrashReport.files(this).size();
+        logsValue.setText(records == 0 ? "" : records == 1 ? "1 record" : records + " records");
         String pairing = WadbPairService.state;
         wadbValue.setText(pairing != null ? "Pairing…" : !WirelessAdb.paired(this) ? "Not paired"
                 : WirelessAdb.refused(this) ? "Pair again" : WirelessAdb.connected() ? "Connected"
@@ -1213,7 +1220,8 @@ public class MainActivity extends Activity {
         new AlertDialog.Builder(this)
                 .setTitle("Free memory while iOS runs?")
                 .setMessage("While iOS runs, and only then, this app ends the background processes of your other apps "
-                        + "every 90 s, as Android does itself when memory runs short. iOS needs 4 to 8 GB, and a save "
+                        + "every 90 s, as Android does itself when memory runs short (and once before a setup step that "
+                        + "needs the memory). iOS needs 4 to 8 GB, and a save "
                         + "3 GB more; without the room Android may close this app, iOS with it.\n\n"
                         + "Your other apps are not force-stopped: their alarms and notifications stay. But an app "
                         + "you left in the background starts again from its first screen when you open it, and "

@@ -22,6 +22,7 @@
     </queries>
 
     <application
+        android:name=".AsoftApp"
         android:extractNativeLibs="true"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher"
@@ -41,6 +42,11 @@
             android:name=".SetupActivity"
             android:exported="false"
             android:screenOrientation="portrait" />
+
+        <!-- what the app kept when something went wrong (CrashReport's records), the app's log, the GPU check's -->
+        <activity
+            android:name=".LogsActivity"
+            android:exported="false" />
 
         <!-- exported in the debug build only: adb starts it in tests -->
         <activity

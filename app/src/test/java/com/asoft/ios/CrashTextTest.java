@@ -266,4 +266,254 @@ public class CrashTextTest {
         assertFalse(whole.contains("_The logs were shortened"));
         assertTrue(whole.contains("number 2 with"));
     }
+
+    // -- a helper VM's end (Helper.Result.failure)
+
+    @Test
+    public void helperKilledForMemorySaysSoAndWhatItWasDoing() {
+        assertEquals("the helper VM was killed (signal 9, probably Android freeing memory) while unpacking the iOS images (7137 MB)",
+                CrashText.helperFailure(-1, 9, null, "unpacking the iOS images (7137 MB)", "tar: something"));
+        assertTrue(CrashText.killedForMemory(9));
+        assertFalse(CrashText.killedForMemory(6));
+        assertFalse(CrashText.killedForMemory(0x900));      // exit code 9 is not signal 9
+        assertFalse(CrashText.killedForMemory(-1));
+        // without a progress line yet
+        assertEquals("the helper VM was killed (signal 9, probably Android freeing memory)",
+                CrashText.helperFailure(-1, 9, null, "", ""));
+    }
+
+    @Test
+    public void helperJobExitCodeKeepsTheScriptsLastWords() {
+        assertEquals("its job failed with exit code 1 while checking the disk: fsck_hfs: volume needs repair",
+                CrashText.helperFailure(1, 0, null, "checking the disk", "fsck_hfs: volume needs repair"));
+        assertEquals("its job failed with exit code 2", CrashText.helperFailure(2, 0, null, null, null));
+        // its own exit code wins over how QEMU ended after it
+        assertTrue(CrashText.helperFailure(3, 9, null, "", "").startsWith("its job failed with exit code 3"));
+    }
+
+    @Test
+    public void helperOtherEnds() {
+        assertEquals("the helper VM crashed (signal 11 (SIGSEGV)) while x", CrashText.helperFailure(-1, 11, null, "x", ""));
+        assertEquals("the helper VM's QEMU ended with exit code 1", CrashText.helperFailure(-1, 0x100, null, "", ""));
+        assertEquals("the helper VM stopped before its job was done while y", CrashText.helperFailure(-1, 0, null, " y ", ""));
+        assertEquals("the helper VM stopped before its job was done", CrashText.helperFailure(-1, -1, null, "", ""));
+        // the app ended it as hung: its words first
+        assertEquals("the helper VM stopped making progress (5 minutes) while z",
+                CrashText.helperFailure(-1, -1, "the helper VM stopped making progress (5 minutes)", "z", ""));
+    }
+
+    @Test
+    public void helperLastOutputIsCapped() {
+        StringBuilder l = new StringBuilder();
+        for (int i = 0; i < 100; i++) {
+            l.append("word ");
+        }
+        String s = CrashText.helperFailure(1, 0, null, "", l.toString());
+        assertTrue(s, s.length() < 350);
+    }
+
+    // -- the app's own end (AppExit)
+
+    @Test
+    public void exitWeightKeepsTheUsersEndsOut() {
+        assertEquals(-1, CrashText.exitWeight(CrashText.EXIT_USER_REQUESTED, "force stop"));
+        assertEquals(-1, CrashText.exitWeight(CrashText.EXIT_USER_STOPPED, null));
+        assertEquals(-1, CrashText.exitWeight(CrashText.EXIT_PACKAGE_UPDATED, null));
+        assertEquals(-1, CrashText.exitWeight(CrashText.EXIT_SELF, null));
+        assertEquals(-1, CrashText.exitWeight(CrashText.EXIT_OTHER, "remove task"));
+        assertEquals(0, CrashText.exitWeight(CrashText.EXIT_OTHER, "something else"));
+        assertEquals(0, CrashText.exitWeight(CrashText.EXIT_LOW_MEMORY, null));
+        assertEquals(0, CrashText.exitWeight(CrashText.EXIT_SIGNALED, null));
+        assertEquals(0, CrashText.exitWeight(CrashText.EXIT_UNKNOWN, null));
+        assertEquals(1, CrashText.exitWeight(CrashText.EXIT_CRASH, null));
+        assertEquals(1, CrashText.exitWeight(CrashText.EXIT_CRASH_NATIVE, null));
+        assertEquals(1, CrashText.exitWeight(CrashText.EXIT_ANR, null));
+    }
+
+    @Test
+    public void exitWordsAndSummary() {
+        assertEquals("The app was closed by Android while the iOS 16 setup was running: low memory",
+                CrashText.appExitSummary(CrashText.EXIT_LOW_MEMORY, 0, null, "the iOS 16 setup was running"));
+        assertEquals("The app was closed by Android while iOS 26 was running: killed (signal 9), usually Android freeing memory",
+                CrashText.appExitSummary(CrashText.EXIT_SIGNALED, 9, null, "iOS 26 was running"));
+        assertEquals("The app crashed: a crash in its native code (signal 11 (SIGSEGV))",
+                CrashText.appExitSummary(CrashText.EXIT_CRASH_NATIVE, 11, null, null));
+        assertEquals("The app crashed while an import from the PC was running: a crash (a Java exception)",
+                CrashText.appExitSummary(CrashText.EXIT_CRASH, 0, null, "an import from the PC was running"));
+        assertEquals("The app stopped responding while x, and Android closed it",
+                CrashText.appExitSummary(CrashText.EXIT_ANR, 0, null, "x"));
+        assertEquals("The app was closed while x (Android 10 does not tell apps why)",
+                CrashText.appExitSummary(CrashText.EXIT_NOT_KEPT, 0, null, "x"));
+        assertEquals("ended by signal 15 (SIGTERM)", CrashText.exitWords(CrashText.EXIT_SIGNALED, 15, null));
+        assertEquals("Android did not say why", CrashText.exitWords(CrashText.EXIT_UNKNOWN, 0, null));
+        assertEquals("LOW_MEMORY (3)", CrashText.exitName(CrashText.EXIT_LOW_MEMORY));
+        assertEquals("not kept (-2)", CrashText.exitName(CrashText.EXIT_NOT_KEPT));
+        assertEquals("reason (99)", CrashText.exitName(99));
+    }
+
+    // -- a record's file (CrashReport)
+
+    private static LinkedHashMap<String, String> header() {
+        LinkedHashMap<String, String> h = new LinkedHashMap<>();
+        h.put("id", "20261112-101500-setup");
+        h.put("kind", "setup");
+        h.put("what", "iOS 16 setup stopped at Build the iOS disk");
+        h.put("cause", "building the iOS disk failed: the helper VM was killed\n(signal 9)");
+        return h;
+    }
+
+    @Test
+    public void recordRoundTrip() {
+        LinkedHashMap<String, List<String>> s = new LinkedHashMap<>();
+        s.put("helper console", Arrays.asList("ASOFT: progress 2 unpacking", "== asoft: not a section ==", ""));
+        s.put(CrashText.RUN_APPLOG, Collections.singletonList("11-12 10:15:00 setup: begin"));
+        List<String> lines = CrashText.recordLines(header(), s, 200_000);
+        assertEquals(CrashText.MAGIC + " 1", lines.get(0));
+        assertTrue(lines.contains("cause: building the iOS disk failed: the helper VM was killed (signal 9)"));
+        CrashText.Parsed p = CrashText.parseRecord(lines);
+        assertEquals(Arrays.asList("id", "kind", "what", "cause"), new ArrayList<>(p.header.keySet()));
+        assertEquals("setup", p.header.get("kind"));
+        assertEquals(Arrays.asList("helper console", CrashText.RUN_APPLOG), new ArrayList<>(p.sections.keySet()));
+        // a log line that looks like a section's header stays in its section, with a space before it
+        assertEquals(Arrays.asList("ASOFT: progress 2 unpacking", " == asoft: not a section ==", ""), p.sections.get("helper console"));
+        assertNull(CrashText.parseRecord(Arrays.asList("not a record", "kind: x")));
+        assertNull(CrashText.parseRecord(Collections.<String>emptyList()));
+    }
+
+    @Test
+    public void recordOfTheOldGuestFormat() {
+        List<String> old = Arrays.asList(CrashText.MAGIC + " 1", "os: ios26", "cause: c", CrashText.OLD_STDERR, "e1", "e2",
+                CrashText.OLD_APPLOG, "a1");
+        CrashText.Parsed p = CrashText.parseRecord(old);
+        assertEquals("ios26", p.header.get("os"));
+        assertEquals(Arrays.asList("e1", "e2"), p.sections.get(CrashText.QEMU_STDERR));
+        assertEquals(Collections.singletonList("a1"), p.sections.get(CrashText.RUN_APPLOG));
+    }
+
+    private static int bytes(List<String> lines) {
+        int n = 0;
+        for (String l : lines) {
+            n += l.getBytes(java.nio.charset.StandardCharsets.UTF_8).length + 1;
+        }
+        return n;
+    }
+
+    @Test
+    public void recordStaysWithinItsSize() {
+        List<String> big = new ArrayList<>(), small = new ArrayList<>();
+        for (int i = 0; i < 5000; i++) {
+            big.add("console line " + i + " with some words to make it longer than a few bytes");
+        }
+        StringBuilder huge = new StringBuilder();
+        for (int i = 0; i < 2000; i++) {
+            huge.append('x');
+        }
+        small.add(huge.toString());
+        small.add("the newest app line");
+        LinkedHashMap<String, List<String>> s = new LinkedHashMap<>();
+        s.put("helper console", big);
+        s.put(CrashText.RUN_APPLOG, small);
+        List<String> lines = CrashText.recordLines(header(), s, 50_000);
+        assertTrue(bytes(lines) + " > 50000", bytes(lines) <= 50_000);
+        CrashText.Parsed p = CrashText.parseRecord(lines);
+        List<String> con = p.sections.get("helper console");
+        // the big section lost its oldest lines, says so, and kept its newest
+        assertTrue(con.get(0), con.get(0).matches("… \\d+ older lines left out \\(the record's size limit\\)"));
+        assertEquals("console line 4999 with some words to make it longer than a few bytes", con.get(con.size() - 1));
+        assertFalse(con.contains("console line 0 with some words to make it longer than a few bytes"));
+        // the small one stays, its long line cut to 500 characters
+        List<String> app = p.sections.get(CrashText.RUN_APPLOG);
+        assertEquals(2, app.size());
+        assertEquals(501, app.get(0).length());
+        assertEquals("the newest app line", app.get(1));
+        // within its size nothing is cut
+        List<String> whole = CrashText.recordLines(header(), s, 10_000_000);
+        assertEquals(2000, CrashText.parseRecord(whole).sections.get(CrashText.RUN_APPLOG).get(0).length());
+    }
+
+    // -- an issue with any logs
+
+    @Test
+    public void fitBodyOfBlocksSharesTheRoomByWeight() {
+        LinkedHashMap<String, String> facts = new LinkedHashMap<>();
+        facts.put("App", "0.1.5-dev (7)");
+        List<String> console = new ArrayList<>(), stderr = new ArrayList<>(), app = new ArrayList<>();
+        for (int i = 0; i < 400; i++) {
+            console.add("console line " + i + " with some more words to make it longer");
+            stderr.add("stderr line " + i + " with some more words to make it longer");
+            app.add("app line " + i + " with some more words to make it longer");
+        }
+        List<CrashText.Block> blocks = new ArrayList<>();
+        blocks.add(new CrashText.Block("Helper console", console, 2));
+        blocks.add(new CrashText.Block("Helper QEMU stderr", stderr, 2));
+        blocks.add(new CrashText.Block("App log", app, 1));
+        blocks.add(new CrashText.Block("Short one", Collections.singletonList("the only line"), 1));
+        String b = CrashText.fitBody("o/r", "t", facts, "w", "c", blocks, 4500);
+        assertTrue(CrashText.issueUrl("o/r", "t", b).length() <= 4500);
+        assertTrue(CrashText.issueUrl("o/r", "t", b).length() > 4000);
+        assertTrue(b.contains("_The logs were shortened"));
+        // every block keeps its newest line, the short one all of it
+        assertTrue(b.contains("console line 399 with"));
+        assertTrue(b.contains("stderr line 399 with"));
+        assertTrue(b.contains("app line 399 with"));
+        assertTrue(b.contains("the only line"));
+        // the weight-2 blocks got about twice the app log's room
+        int c = count(b, "console line "), a = count(b, "app line ");
+        assertTrue(c + " vs " + a, c > a * 3 / 2);
+    }
+
+    private static int count(String s, String what) {
+        int n = 0;
+        for (int i = s.indexOf(what); i >= 0; i = s.indexOf(what, i + 1)) {
+            n++;
+        }
+        return n;
+    }
+
+    // -- the helper VM's RAM (Helper)
+
+    @Test
+    public void helperRamFollowsThePhone() {
+        long gb = 1_000_000_000L;
+        // what phones report as MemTotal: a little under their label
+        assertEquals(4096, Helper.sizeFor(11_200_000_000L, Helper.FLOOR_WORK_IN_RAM));     // 12 GB (the S25 Ultra)
+        assertEquals(4096, Helper.sizeFor(15 * gb, Helper.FLOOR_IOS16));                    // 16 GB: never above 4 GiB
+        assertEquals(3072, Helper.sizeFor(7_400_000_000L, Helper.FLOOR_IOS16));            // 8 GB
+        assertEquals(2048, Helper.sizeFor(5_600_000_000L, Helper.FLOOR_IOS16));            // 6 GB
+        assertEquals(1536, Helper.sizeFor(3_700_000_000L, Helper.FLOOR_IOS16));            // 4 GB
+        // the jobs that keep their work in RAM never get less than 2 GiB
+        assertEquals(2048, Helper.sizeFor(3_700_000_000L, Helper.FLOOR_WORK_IN_RAM));
+    }
+
+    @Test
+    public void helperRetryStepsDownAfterTheMemoryKiller() {
+        assertEquals(3072, Helper.smaller(4096, Helper.FLOOR_IOS16));
+        assertEquals(1536, Helper.smaller(2048, Helper.FLOOR_IOS16));
+        assertEquals(1536, Helper.smaller(1536, Helper.FLOOR_IOS16));
+        assertEquals(2048, Helper.smaller(2048, Helper.FLOOR_WORK_IN_RAM));
+        Helper.Result r = new Helper.Result();
+        r.ramMiB = 3072;
+        r.status = 9;
+        assertTrue(r.killedForMemory());
+        assertTrue(Helper.worthRetry(r, Helper.FLOOR_WORK_IN_RAM));
+        assertEquals(2048, Helper.retryRam(r, Helper.FLOOR_WORK_IN_RAM));
+        // at the floor already: no retry under TCG (it would end the same way), unless it ran native
+        r.ramMiB = 2048;
+        assertFalse(Helper.worthRetry(r, Helper.FLOOR_WORK_IN_RAM));
+        r.nat = true;
+        assertTrue(Helper.worthRetry(r, Helper.FLOOR_WORK_IN_RAM));
+        assertEquals(2048, Helper.retryRam(r, Helper.FLOOR_WORK_IN_RAM));
+        // a job's own failure under native: the retry keeps the size
+        Helper.Result j = new Helper.Result();
+        j.nat = true;
+        j.rc = 1;
+        j.status = 0;
+        j.ramMiB = 4096;
+        assertFalse(j.killedForMemory());
+        assertTrue(Helper.worthRetry(j, Helper.FLOOR_IOS16));
+        assertEquals(4096, Helper.retryRam(j, Helper.FLOOR_IOS16));
+        // done (rc 0): nothing to retry
+        j.rc = 0;
+        assertFalse(Helper.worthRetry(j, Helper.FLOOR_IOS16));
+    }
 }

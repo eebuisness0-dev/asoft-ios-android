@@ -38,7 +38,8 @@ final class SetupScreen {
         NAMES.put("Firmware/all_flash/DeviceTree.d22ap.im4p", "iPhone X device tree");
     }
 
-    private static final String[][] STEPS = {
+    /** iOS 16's steps and what the screen calls them (SetupRecord names the failed one with them too). */
+    static final String[][] STEPS = {
             {"ipsw", "Download from Apple"},
             {"payload", "Kernel with the iPhone's device tree"},
             {"disk", "Build the iOS disk"},
@@ -50,7 +51,9 @@ final class SetupScreen {
     private final Activity a;
     private final LinearLayout root;
     private final Handler h = new Handler(Looper.getMainLooper());
-    private TextView total, details, error, free;
+    private TextView total, details, error, free, memory;
+    /** Share log and Report on GitHub under a failed step's red line (its record: SetupService.state.record). */
+    private View errorButtons;
     private ProgressBar totalBar;
     private LinearLayout files;
     private final Map<String, TextView[]> fileRows = new LinkedHashMap<>();
@@ -157,6 +160,9 @@ final class SetupScreen {
 
         error = text(root, "", 15, RED);
         error.setPadding(8, 24, 8, 0);
+        errorButtons = logButtons(a, root, () -> SetupService.state.record);
+        memory = text(root, "", 13, GRAY);
+        memory.setPadding(8, 16, 8, 0);
 
         LinearLayout opts = card(24);
         Switch wifi = new Switch(a);
@@ -182,6 +188,7 @@ final class SetupScreen {
             if (s.running && !s.paused) {
                 SetupService.pause(a);
             } else if (Guest.running()) {
+                s.record = null;
                 s.error = "Close iOS first (side bar > Saves > Save and close): the setup needs its memory.";
             } else {
                 SetupService.start(a);
@@ -201,6 +208,38 @@ final class SetupScreen {
         buttons.addView(startPause, wide);
         buttons.addView(cancel, new LinearLayout.LayoutParams(-2, -2));
         root.addView(buttons);
+    }
+
+    /**
+     * Share log and Report on GitHub for the record @id gives (a failed step's), added to @to; hidden until the
+     * screen shows it. Setup26Screen's error line has them too.
+     */
+    static View logButtons(Activity a, LinearLayout to, java.util.function.Supplier<String> id) {
+        LinearLayout row = new LinearLayout(a);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setPadding(0, 8, 0, 0);
+        Button share = new Button(a), report = new Button(a);
+        share.setText("Share log");
+        report.setText("Report on GitHub");
+        for (Button b : new Button[] {share, report}) {
+            b.setAllCaps(false);
+            row.addView(b, new LinearLayout.LayoutParams(0, -2, 1));
+        }
+        share.setOnClickListener(v -> {
+            CrashReport.Record r = CrashReport.find(a, id.get());
+            if (r != null) {
+                CrashReport.share(a, r);
+            }
+        });
+        report.setOnClickListener(v -> {
+            CrashReport.Record r = CrashReport.find(a, id.get());
+            if (r != null) {
+                CrashReport.openIssue(a, r);
+            }
+        });
+        row.setVisibility(View.GONE);
+        to.addView(row);
+        return row;
     }
 
     private static String gb(long b) {
@@ -233,6 +272,12 @@ final class SetupScreen {
                 gb(freeBytes), gb(need)));
         free.setTextColor(freeBytes < need ? ORANGE : DIM);
 
+        boolean mine = !"a26".equals(s.target);
+        // (a26's own error line has its buttons: Setup26Screen)
+        errorButtons.setVisibility(mine && s.error != null && s.record != null && !s.running ? View.VISIBLE : View.GONE);
+        String note = Helper.memoryNote;
+        memory.setText(note == null ? "" : note);
+        memory.setVisibility(mine && s.running && note != null ? View.VISIBLE : View.GONE);
         if (s.running && "a26".equals(s.target)) {
             // the iOS 26 / watchOS install runs (Setup26Screen shows it); one install at a time
             startPause.setText("iOS 26 / watchOS are being installed");

@@ -719,20 +719,23 @@ final class PhoneSetup26 {
                 }
             }
         };
-        Helper.Result r = Helper.run(c, "run", all, cpus, jd, l, cancelled, true);
-        if (r.rc != 0 && r.nat && !cancelled.getAsBoolean()) {
-            // the native engine for Linux is new (2026-11-08): once more under TCG, with the new disks made again
-            AppLog.note(c, "setup26: job " + j.name + " failed natively (" + r.last + "); again under TCG");
+        Helper.Result r = Helper.run(c, "run", all, cpus, jd, l, cancelled, true, Helper.ramMiB(c, Helper.FLOOR_WORK_IN_RAM));
+        if (Helper.worthRetry(r, Helper.FLOOR_WORK_IN_RAM) && !cancelled.getAsBoolean()) {
+            // the native engine for Linux is new (2026-11-08): once more under TCG, with the new disks made again;
+            // after Android's memory killer with less RAM too
+            int ram = Helper.retryRam(r, Helper.FLOOR_WORK_IN_RAM);
+            AppLog.note(c, "setup26: job " + j.name + " failed (" + r.failure() + ", " + r.how() + "); again under TCG with "
+                    + ram + " MiB");
             remakeNew(c, j);
             if (!j.scratch.isEmpty()) {
                 scratch.delete();
                 qemuImg(c, "create", "-q", "-f", "qcow2", scratch.getPath(), String.valueOf(j.scratchBytes));
             }
-            r = Helper.run(c, "run", all, cpus, jd, l, cancelled, false);
+            r = Helper.run(c, "run", all, cpus, jd, l, cancelled, false, ram);
         }
         if (r.rc != 0) {
-            throw new IOException("the helper VM's " + j.name + " job failed (" + r.last + "); its log is in "
-                    + new File(jd, "serial.txt"));
+            // (its console and stderr went into Helper's failures for the setup's record: the screen says what it was)
+            throw new IOException("the helper VM's " + j.name + " job failed: " + r.failure());
         }
         if (!j.out.isEmpty()) {
             if (r.outBytes <= 0) {

@@ -117,6 +117,21 @@ public class GuestService extends Service {
             }, "crash-test").start();
             return START_NOT_STICKY;
         }
+        if ("appcrash".equals(action)
+                && (getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0) {
+            // debug builds: a Java crash of the app itself, for its record (AppExit's handler) and the notice after.
+            // Not while iOS runs: the app's end would take it along
+            if (Guest.running()) {
+                foreground(Guest.osName(Guest.os(this)) + " is running");
+                note("app crash test: not while " + Guest.osName(Guest.os(this)) + " runs");
+                return START_NOT_STICKY;
+            }
+            note("app crash test: throwing on the main thread");
+            new android.os.Handler(android.os.Looper.getMainLooper()).post(() -> {
+                throw new IllegalStateException("app crash test (a debug build's GuestService appcrash)");
+            });
+            return START_NOT_STICKY;
+        }
         if ("off".equals(action)) {     // QEMU stopped at once, no save, no shutdown (adb tests)
             foreground("Turning iOS off");
             Guest.stop();

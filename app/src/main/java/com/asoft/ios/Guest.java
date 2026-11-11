@@ -1424,6 +1424,8 @@ final class Guest {
             return;
         }
         noticedPid = p;
+        // the app saw it end: a death of the app's process from now on is not "while iOS was running"
+        AppExit.end(appContext, AppExit.GUEST);
         CrashReport.Run r = run;
         if (endingByApp == p || r == null || r.pid != p || appContext == null) {
             return;
@@ -1440,6 +1442,7 @@ final class Guest {
             noticeEnd(p);
         }
         endingByApp = p;
+        AppExit.end(appContext, AppExit.GUEST);
     }
 
     /** The setup (PhoneSetup26.endBoot) quits its boot's QEMU itself: no crash. */
@@ -1493,6 +1496,10 @@ final class Guest {
         r.engine = engine;
         run = r;
         watch(pid);
+        // a death of the app's process while it runs is noticed at the next start (a setup's boot is the setup's)
+        if (!setup && appContext != null) {
+            AppExit.begin(appContext, AppExit.GUEST, osName(os) + " was running");
+        }
     }
 
     /** A stand-in QEMU for the crash test: reims' last words, as a real one says them, then SIGABRT. */

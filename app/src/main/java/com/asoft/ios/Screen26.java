@@ -134,18 +134,20 @@ final class Screen26 {
         Helper.hold = null;
         Helper.Result r;
         try {
-            r = Helper.run(c, "run", disks, cpus, jd, l, () -> false, true);
-            if (r.rc != 0 && r.nat) {
-                AppLog.note(c, "screen26: the helper VM failed natively (" + r.last + "); again under TCG");
+            r = Helper.run(c, "run", disks, cpus, jd, l, () -> false, true, Helper.ramMiB(c, Helper.FLOOR_WORK_IN_RAM));
+            if (Helper.worthRetry(r, Helper.FLOOR_WORK_IN_RAM)) {
+                int ram = Helper.retryRam(r, Helper.FLOOR_WORK_IN_RAM);
+                AppLog.note(c, "screen26: the helper VM failed (" + r.failure() + ", " + r.how() + "); again under TCG with "
+                        + ram + " MiB");
                 said[0] = said[1] = null;
-                r = Helper.run(c, "run", disks, cpus, jd, l, () -> false, false);
+                r = Helper.run(c, "run", disks, cpus, jd, l, () -> false, false, ram);
             }
         } finally {
             Helper.hold = hold;
         }
         if (r.rc != 0 || said[0] == null || said[1] == null) {
             throw new IOException("iOS 26's disk could not be checked before its start: the helper VM "
-                    + (r.rc != 0 ? "failed (" + r.last + ")" : "said nothing about " + (said[0] == null ? "the cache" : "the Auto-Lock folder"))
+                    + (r.rc != 0 ? "failed (" + r.failure() + ")" : "said nothing about " + (said[0] == null ? "the cache" : "the Auto-Lock folder"))
                     + "; its log is in " + new File(jd, "serial.txt"));
         }
         AppLog.note(c, "screen26: " + userDisk.getName() + " for " + width + "x" + height + ": MobileGestalt cache "

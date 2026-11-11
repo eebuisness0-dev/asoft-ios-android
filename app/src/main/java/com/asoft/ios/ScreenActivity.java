@@ -926,7 +926,7 @@ public class ScreenActivity extends Activity implements SurfaceHolder.Callback, 
      * changed: doFrame asks once a second while the guest is stopped.
      */
     private CrashReport.Record pendingCrash(int os) {
-        String key = os + " " + CrashReport.pendingId(this, os) + " " + CrashReport.file(this, 0).lastModified();
+        String key = os + " " + CrashReport.pendingId(this, os) + " " + CrashReport.stamp(this);
         if (!key.equals(crashFor)) {
             crashFor = key;
             crash = CrashReport.pendingFor(this, os);
