@@ -614,6 +614,8 @@ final class Installer {
         new File(c.getFilesDir(), "setup").delete();
         new File(c.getFilesDir(), "helper-jobs").delete();
         Guest.forgetSystem(c, os);
+        // its crash notice goes (a new install is not the system that crashed); the records stay in files/run
+        CrashReport.startedAgain(c, os);
         if (os != Guest.IOS16) {
             PhoneSetup26.dropWant(c, os == Guest.WATCH ? PhoneSetup26.WATCH : PhoneSetup26.IOS26);
         }

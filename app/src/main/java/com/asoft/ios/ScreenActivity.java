@@ -38,6 +38,11 @@ public class ScreenActivity extends Activity implements SurfaceHolder.Callback, 
     private int fbPid = -1;             // the QEMU whose framebuffer is mapped
     private long lastTry;
     private Button restart;
+    /** Under restart when the guest ended by itself: the crash report (CrashReport.show). */
+    private Button report;
+    /** The pending crash record shown, and what it was read for (the os, its notice, the newest record's time). */
+    private CrashReport.Record crash;
+    private String crashFor;
     /** watchOS: the picture sits in a drawn watch (WatchCase), whose crown and side button are the watch's. */
     private boolean watchMode;
     private WatchCase watchCase;
@@ -156,7 +161,14 @@ public class ScreenActivity extends Activity implements SurfaceHolder.Callback, 
         status.setTextColor(Color.WHITE);
         status.setTextSize(13);
         status.setPadding(24, 24, 24, 24);
-        root.addView(status, new FrameLayout.LayoutParams(-2, -2, Gravity.TOP | Gravity.START));
+        FrameLayout.LayoutParams slp = new FrameLayout.LayoutParams(-2, -2, Gravity.TOP | Gravity.START);
+        // clear of the button bar at the screen's edge: a crash's cause is several lines and ran under it
+        if (watchMode) {
+            slp.leftMargin = dp(54);
+        } else {
+            slp.rightMargin = dp(54);
+        }
+        root.addView(status, slp);
         // mid right edge: iOS keeps nothing there on the lock screen, home screen or dock
         // the watch keeps its crown on the right: its bar goes to the left edge
         root.addView(buttonBar(), new FrameLayout.LayoutParams(-2, -2, Gravity.TOP | (watchMode ? Gravity.START : Gravity.END)));
@@ -170,6 +182,7 @@ public class ScreenActivity extends Activity implements SurfaceHolder.Callback, 
         restart.setVisibility(View.GONE);
         restart.setOnClickListener(v -> {
             restart.setVisibility(View.GONE);
+            report.setVisibility(View.GONE);
             if (Qmp.noSpace && Guest.running()) {
                 // paused on a full disk: go on (QEMU pauses again, and says so, if there is still no room)
                 Qmp.noSpace = false;
@@ -184,6 +197,13 @@ public class ScreenActivity extends Activity implements SurfaceHolder.Callback, 
             GuestService.start(this);
         });
         root.addView(restart, new FrameLayout.LayoutParams(-2, -2, Gravity.CENTER));
+        report = new Button(this);
+        report.setText("Report this crash");
+        report.setVisibility(View.GONE);
+        report.setOnClickListener(v -> CrashReport.show(this, crash));
+        FrameLayout.LayoutParams rlp = new FrameLayout.LayoutParams(-2, -2, Gravity.CENTER);
+        rlp.topMargin = Math.round(64 * getResources().getDisplayMetrics().density);     // below restart
+        root.addView(report, rlp);
         setContentView(root);
         view.setOnTouchListener(this::onTouch);
         renderThread = new HandlerThread("render");
@@ -208,6 +228,7 @@ public class ScreenActivity extends Activity implements SurfaceHolder.Callback, 
         super.onNewIntent(i);
         if (!Guest.running() && !Guest.saving() && !closing && !"preparing".equals(Guest.state)) {
             restart.setVisibility(View.GONE);
+            report.setVisibility(View.GONE);
             status.setText("starting");
             GuestService.start(this);
         }
@@ -608,6 +629,7 @@ public class ScreenActivity extends Activity implements SurfaceHolder.Callback, 
                 .setPositiveButton("Load", (d, w) -> {
                     status.setText("Loading \"" + snap.label() + "\"…");
                     restart.setVisibility(View.GONE);
+                    report.setVisibility(View.GONE);
                     GuestService.load(this, snap.tag);
                 })
                 .setNeutralButton("Delete", (d, w) -> new android.app.AlertDialog.Builder(this)
@@ -635,6 +657,7 @@ public class ScreenActivity extends Activity implements SurfaceHolder.Callback, 
                     Guest.goBack(this, os, snap.tag);
                     status.setText("Going back to " + when(snap) + "…");
                     restart.setVisibility(View.GONE);
+                    report.setVisibility(View.GONE);
                     GuestService.load(this, snap.tag);
                 })
                 .setNegativeButton("Cancel", null)
@@ -680,17 +703,24 @@ public class ScreenActivity extends Activity implements SurfaceHolder.Callback, 
     /** Where the compatibility mode's stops are collected (asoft-ios-android). */
     static final String COMPAT_ISSUE = "https://github.com/alpersamur3/asoft-ios-android/issues/1";
 
+    static final String COMPAT_TEXT = "This is a known issue on this GPU (Adreno 750 and others without sparse binds from host memory)."
+            + " If you want to help fix it, write on Reddit (r/hackios) or open an issue on GitHub.";
+    /** How long a stop in the compatibility mode waits for its crash record before the notice shows alone. */
+    private static final long COMPAT_WAIT_MS = 6000;
+    /** When the guest's end in the compatibility mode was seen (Guest.endedInCompatMode); 0: none waits. */
+    private long compatSince;
+
     /**
      * iOS 26 or watchOS ended by itself in the GPU's compatibility mode (GpuCheck.noSparse: no sparse binds from
      * host memory, so reims' views take a mapping each and a long run can reach Android's limit): once per stop
-     * (Guest.endedInCompatMode), where to tell us about it.
+     * (Guest.endedInCompatMode), where to tell us about it. Only when no crash record came: with one, its report
+     * says this (CrashReport.show with COMPAT_TEXT), so that one stop shows one dialog.
      */
     private void compatNotice(String name) {
         AppLog.note(this, "gpu: " + name + " stopped in the compatibility mode: notice shown");
         new android.app.AlertDialog.Builder(this)
                 .setTitle(name + " stopped")
-                .setMessage("This is a known issue on this GPU (Adreno 750 and others without sparse binds from host memory)."
-                        + " If you want to help fix it, write on Reddit (r/hackios) or open an issue on GitHub.")
+                .setMessage(COMPAT_TEXT)
                 .setPositiveButton("Open the GitHub issue", (d, w) -> {
                     try {
                         startActivity(new android.content.Intent(android.content.Intent.ACTION_VIEW,
@@ -891,6 +921,19 @@ public class ScreenActivity extends Activity implements SurfaceHolder.Callback, 
 
     // -- the guest: open its framebuffer and QMP once it is up
 
+    /**
+     * @os's pending crash record (CrashReport.pendingFor), read again only when its notice or the newest record
+     * changed: doFrame asks once a second while the guest is stopped.
+     */
+    private CrashReport.Record pendingCrash(int os) {
+        String key = os + " " + CrashReport.pendingId(this, os) + " " + CrashReport.file(this, 0).lastModified();
+        if (!key.equals(crashFor)) {
+            crashFor = key;
+            crash = CrashReport.pendingFor(this, os);
+        }
+        return crash;
+    }
+
     @Override
     public void doFrame(long frameTimeNanos) {
         Choreographer.getInstance().postFrameCallback(this);
@@ -960,6 +1003,7 @@ public class ScreenActivity extends Activity implements SurfaceHolder.Callback, 
                         getFilesDir().getUsableSpace() / 1e9, Guest.osName(Guest.os(this))));
                 restart.setText("Continue");
                 restart.setVisibility(View.VISIBLE);
+                report.setVisibility(View.GONE);
             }
         } else if ("resuming".equals(Guest.state) || "switching".equals(Guest.state)) {
             status.setText("Loading the saved " + Guest.osName(Guest.os(this)) + "…");
@@ -968,6 +1012,7 @@ public class ScreenActivity extends Activity implements SurfaceHolder.Callback, 
             String what = Guest.preparing;
             status.setText(what == null ? "starting" : what);
             restart.setVisibility(View.GONE);
+            report.setVisibility(View.GONE);
         } else if (!closing && status.getText().length() > 0 && fbPid == Guest.pid(this)
                 && ("running".equals(Guest.state) || "booting".equals(Guest.state))) {
             status.setText("");
@@ -981,14 +1026,36 @@ public class ScreenActivity extends Activity implements SurfaceHolder.Callback, 
                 if (err != null) {
                     status.setText(name + " did not start: " + err);
                     restart.setVisibility(View.VISIBLE);
+                    report.setVisibility(View.GONE);
                     fbPid = -1;
                     return;
                 }
                 String why = Guest.stopReason(this);
-                status.setText(name + " stopped" + (why.isEmpty() ? "" : ": " + why));
+                // QEMU ended by itself: its record (written a moment after the end) says why, and can be reported
+                CrashReport.Record cr = pendingCrash(Guest.os(this));
+                if (cr != null) {
+                    // whole (CrashText.cause keeps 600 characters): the pixel format comes at the end of reims' line
+                    String cause = cr.cause;
+                    status.setText(name + (cr.crash ? " crashed: " : " stopped by itself: ")
+                            + (!why.isEmpty() && !why.equals(cr.cause) ? why + "\n" : "") + cause);
+                } else {
+                    status.setText(name + " stopped" + (why.isEmpty() ? "" : ": " + why));
+                }
                 restart.setVisibility(View.VISIBLE);
+                report.setVisibility(cr != null ? View.VISIBLE : View.GONE);
                 if (Guest.endedInCompatMode()) {
-                    compatNotice(name);
+                    compatSince = now;
+                }
+                // one dialog, not two: the crash's report says the compatibility mode's sentence too. Its record
+                // comes a moment after the end (CrashReport.captureAsync); without one in a few seconds, the notice alone
+                if (compatSince > 0 && (cr != null || now - compatSince > COMPAT_WAIT_MS)) {
+                    compatSince = 0;
+                    if (cr != null) {
+                        AppLog.note(this, "gpu: " + name + " stopped in the compatibility mode: crash report shown");
+                        CrashReport.show(this, cr, COMPAT_TEXT);
+                    } else {
+                        compatNotice(name);
+                    }
                 }
                 if (fbPid != -1) {
                     render.post(Render::clear);     // not the stopped guest's last frame
@@ -1004,6 +1071,7 @@ public class ScreenActivity extends Activity implements SurfaceHolder.Callback, 
             fbPid = err == null ? pid : -1;
             status.setText(err == null ? "" : "starting: " + err);
             restart.setVisibility(View.GONE);
+            report.setVisibility(View.GONE);
         }
         if (fbPid == pid && attached) {
             int w = surfW, h = surfH;

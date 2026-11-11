@@ -1399,7 +1399,157 @@ final class Guest {
     private static final int AOD_SAVED = 0x80;
 
     static synchronized boolean running() {
-        return Render.alive(pid);
+        boolean a = Render.alive(pid);
+        if (!a && pid > 0) {
+            noticeEnd(pid);
+        }
+        return a;
+    }
+
+    // -- QEMU's own ends, for the crash report (CrashReport)
+
+    /** The QEMU the app asked to end (a stop, a save's quit, a turn off, the setup's end of a boot): its end is no crash. */
+    private static volatile int endingByApp = -1;
+    /** The QEMU whose end was looked at already. */
+    private static int noticedPid = -1;
+    /** What the crash report needs of the QEMU that runs (or ran last). */
+    private static volatile CrashReport.Run run;
+
+    /**
+     * QEMU @p has ended (it was reaped): unless the app asked for that, its end is recorded (CrashReport). Once per
+     * QEMU; with this class's lock held.
+     */
+    private static void noticeEnd(int p) {
+        if (p <= 0 || p == noticedPid) {
+            return;
+        }
+        noticedPid = p;
+        CrashReport.Run r = run;
+        if (endingByApp == p || r == null || r.pid != p || appContext == null) {
+            return;
+        }
+        CrashReport.captureAsync(appContext, r, Render.endStatus(p));
+    }
+
+    /**
+     * The app is about to end QEMU @p. One that ended before it asked ended by itself (the service's stop after a
+     * load that failed comes after QEMU died): that end is looked at first.
+     */
+    private static synchronized void appEnds(int p) {
+        if (p > 0 && !Render.alive(p)) {
+            noticeEnd(p);
+        }
+        endingByApp = p;
+    }
+
+    /** The setup (PhoneSetup26.endBoot) quits its boot's QEMU itself: no crash. */
+    static void willEnd() {
+        int p;
+        synchronized (Guest.class) {
+            p = pid;
+        }
+        appEnds(p);
+    }
+
+    /**
+     * Looks at QEMU @forPid twice a second until it ends, so an end nobody is waiting for (the screen closed, the
+     * phone asleep) is recorded while its stderr is still there.
+     */
+    private static void watch(int forPid) {
+        Thread t = new Thread(() -> {
+            while (true) {
+                try {
+                    Thread.sleep(500);
+                } catch (InterruptedException e) {
+                    return;
+                }
+                synchronized (Guest.class) {
+                    if (pid != forPid) {
+                        return;
+                    }
+                    if (!Render.alive(forPid)) {
+                        noticeEnd(forPid);
+                        return;
+                    }
+                }
+            }
+        }, "qemu-watch");
+        t.setDaemon(true);
+        t.start();
+    }
+
+    /** The record of the QEMU just spawned (pid), and its watcher; with this class's lock held. */
+    private static void track(int os, boolean setup, String start, long logAt, int cpus, int ramMiB, String screen, String engine) {
+        CrashReport.Run r = new CrashReport.Run();
+        r.pid = pid;
+        r.os = os;
+        r.setup = setup;
+        r.start = start;
+        r.startedMs = System.currentTimeMillis();
+        r.appLogOffset = logAt;
+        r.cpus = cpus;
+        r.ramMiB = ramMiB;
+        r.screen = screen;
+        r.engine = engine;
+        run = r;
+        watch(pid);
+    }
+
+    /** A stand-in QEMU for the crash test: reims' last words, as a real one says them, then SIGABRT. */
+    private static final String CRASH_TEST = "cat >&2 <<'EOF'\n"
+            + "reims[warn] create::function: Metal refused the function's IR: Error Domain=MTLLibraryErrorDomain Code=1\n"
+            + "reims[warn] create::function: Metal refused the function's IR: Error Domain=MTLLibraryErrorDomain Code=1\n"
+            + "reims-vgpu: fatal: platform call renderCommandEncoderWithDescriptor:: the Vulkan runtime refused it: unsupported:"
+            + " Unsupported { feature: Format, needs: NotImplemented, location: None, symbol: None }; the pass's attachments:"
+            + " colour 0 552 (BGR10_XR) Type2D usage 0x4 Private\n"
+            + "EOF\n"
+            // long enough to open the guest's screen over it (a screen opened on nothing running starts the guest)
+            + "sleep 10\n"
+            + "kill -ABRT $$\n";
+
+    /**
+     * Debug builds: the whole crash report path on the phone without a guest or a disk. A shell stands in for
+     * QEMU, says what reims says when it gives up, and aborts; the record, the notification and the screens'
+     * "Report this crash" follow as for a real one.
+     */
+    static synchronized void startCrashTest(Context c) throws IOException {
+        if ((c.getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) == 0) {
+            throw new IOException("the crash test is in debug builds only");
+        }
+        if (running()) {
+            throw new IOException(osName(runningOs) + " is running: close it first");
+        }
+        if (qmp != null) {
+            qmp.close();
+            qmp = null;
+        }
+        appContext = c.getApplicationContext();
+        int os = selected(c);
+        runningOs = os;
+        CrashReport.awaitCapture(15_000);
+        long logAt = new File(runDir(c), "app.txt").length();
+        CrashReport.startedAgain(c, os);
+        AppLog.keepRunLogs(c);
+        AppLog.note(c, "crash test: a stand-in QEMU that aborts");
+        List<String> envp = new ArrayList<>();
+        for (Map.Entry<String, String> e : System.getenv().entrySet()) {
+            envp.add(e.getKey() + "=" + e.getValue());
+        }
+        endingByApp = -1;
+        noticedPid = -1;
+        resumed = false;
+        loadedTag = null;
+        // (the files dir as every QEMU's: Render.spawn)
+        pid = Render.spawn(new String[] {"/system/bin/sh", "-c", CRASH_TEST}, envp.toArray(new String[0]),
+                new File(runDir(c), "qemu-stderr.txt").getPath(), c.getFilesDir().getPath());
+        if (pid < 0) {
+            throw new IOException("cannot start the crash test");
+        }
+        state = "booting";
+        boolean v = os != IOS16;
+        // the engine the system runs on, so the record's engine line (and its SHA-1) is a real one
+        track(os, false, "a crash test", logAt, bootCpus, v ? ramMiB(c, os) : 7168, v ? fb26W + "x" + fb26H : "",
+                v ? Emu.qemu26Path(c) : Emu.qemuPath(c));
     }
 
     static synchronized int pid(Context c) {
@@ -1636,6 +1786,10 @@ final class Guest {
             tags.append(tags.length() > 0 ? ", " : "").append(s.tag);
         }
         loadedTag = resumed ? loadTag : null;
+        // the record of the QEMU before reads its stderr, which this start truncates
+        CrashReport.awaitCapture(15_000);
+        long logAt = new File(runDir(c), "app.txt").length();
+        CrashReport.startedAgain(c, IOS16);
         AppLog.keepRunLogs(c);
         AppLog.note(c, "start: wanted " + (loadTag == null ? "a boot" : loadTag) + ", saves [" + tags + "] -> "
                 + (resumed ? "-loadvm " + loadTag : "boot"));
@@ -1718,12 +1872,15 @@ final class Guest {
             envp.add(e.getKey() + "=" + e.getValue());
         }
         setDirty(c, IOS16, true);
+        endingByApp = -1;
+        noticedPid = -1;
         pid = Render.spawn(cmd.toArray(new String[0]), envp.toArray(new String[0]),
                 new File(run, "qemu-stderr.txt").getPath(), c.getFilesDir().getPath());
         if (pid < 0) {
             throw new IOException("cannot start QEMU");
         }
         state = resumed ? "resuming" : "booting";
+        track(IOS16, false, resumed ? "the save " + loadTag : "a boot", logAt, smp, 7168, "", Emu.qemuPath(c));
         connectQmp(c, pid);
     }
 
@@ -1888,6 +2045,12 @@ final class Guest {
                 && savedLedsFile(c, loadTag).lastModified() < Screen26.lockFixed(c, diskName(c, IOS26))) {
             // a quick save from before the boot that had the Auto-Lock folder put right (a way back): the same
             Screen26.forgetLock(c, diskName(c, IOS26));
+        }
+        // the record of the QEMU before reads its stderr, which this start truncates
+        CrashReport.awaitCapture(15_000);
+        long logAt = new File(runDir(c), "app.txt").length();
+        if (sb == null) {
+            CrashReport.startedAgain(c, os);
         }
         AppLog.keepRunLogs(c);
         AppLog.note(c, "start " + osName(os) + " from " + g + ": wanted " + (loadTag == null ? "a boot" : loadTag) + ", saves ["
@@ -2063,6 +2226,8 @@ final class Guest {
         } else {
             new File(run, "console.sock").delete();
         }
+        endingByApp = -1;
+        noticedPid = -1;
         pid = Render.spawn(cmd.toArray(new String[0]), envp.toArray(new String[0]),
                 new File(run, "qemu-stderr.txt").getPath(), c.getFilesDir().getPath());
         if (pid < 0) {
@@ -2070,6 +2235,8 @@ final class Guest {
         }
         AppLog.note(c, osName(os) + " QEMU pid " + pid);
         state = resumed ? "resuming" : "booting";
+        track(os, sb != null, resumed ? "the save " + loadTag : "a boot", logAt, smp, bootRamMiB, fb26W + "x" + fb26H,
+                Emu.qemu26Path(c));
         connectQmp(c, pid);
     }
 
@@ -2131,6 +2298,7 @@ final class Guest {
             if (why == null) {
                 setQuickStale(c, forOs, false);     // a new quick save replaced the stale one
             }
+            appEnds(p);     // (not before the save: QEMU ending in savevm is a crash)
             q.call("{\"execute\":\"quit\"}", 10000);
             for (int i = 0; i < 100 && Render.alive(p); i++) {
                 try {
@@ -2204,6 +2372,7 @@ final class Guest {
             if (!Render.alive(p)) {
                 return "iOS is not running";
             }
+            appEnds(p);
             state = "turning off";
             int forOs = runningOs;
             // from here on the quick save is not where iOS is: never loaded again, even if its delete fails
@@ -2283,6 +2452,7 @@ final class Guest {
     /** stop(), and wait (at most 30 s) until QEMU has gone and let go of the user disk. */
     static void stopAndWait() {
         int p = pid;
+        appEnds(p);
         if (ios26Running()) {
             Qmp q;
             synchronized (Guest.class) {
@@ -2353,6 +2523,9 @@ final class Guest {
     }
 
     static synchronized void stop() {
+        if (pid > 0) {
+            appEnds(pid);
+        }
         if (ios26Running() && pid > 0) {
             Qmp q = qmp;
             int p = pid;

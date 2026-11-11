@@ -33,6 +33,9 @@ final class Render {
 
     static native boolean alive(int pid);
 
+    /** The raw wait status @pid ended with, as the alive() that reaped it saw it; -1 when unknown. */
+    static native int endStatus(int pid);
+
     static native void terminate(int pid);
 
     /** SIGKILL, for a QEMU that does not end on terminate() (iOS 26's). */
