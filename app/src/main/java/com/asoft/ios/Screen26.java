@@ -75,13 +75,18 @@ final class Screen26 {
         }
     }
 
+    /** fit()'s helper VM folder; only iOS 26's (Installer.remove takes it with iOS 26). */
+    static File jobDir(Context c) {
+        return new File(c.getFilesDir(), "helper-jobs/ios26-screen");
+    }
+
     /**
      * Has the helper VM look at @userDisk's cache, for a screen @width x @height pixels; iOS must not run on
      * the disk. True when the cache was another screen's and was moved aside: the disk's saves then hold iOS
      * as it ran with it (and the cache itself), so the caller drops the quick ones. About half a minute.
      */
     static boolean fit(Context c, File userDisk, int width, int height) throws IOException {
-        File jd = new File(c.getFilesDir(), "helper-jobs/ios26-screen");
+        File jd = jobDir(c);
         Helper.endLeftover(c, jd);
         Installer.deleteTree(jd);
         jd.mkdirs();

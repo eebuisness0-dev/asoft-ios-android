@@ -9,6 +9,8 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * Brings iOS in from a bundle the PC made (pc/Send-ToPhone.ps1): a tar of asoft-bundle.json,
@@ -86,6 +88,18 @@ final class Installer {
      * the archive's first file (Send-ToPhone.ps1 -OS). Returns it.
      */
     static String installAny(Context c, InputStream in, long total, Progress p) throws IOException {
+        importing = true;
+        try {
+            return importNow(c, in, total, p);
+        } finally {
+            importing = false;
+        }
+    }
+
+    /** An import runs (installAny): nothing may be removed meanwhile (cannotRemove). */
+    private static volatile boolean importing;
+
+    private static String importNow(Context c, InputStream in, long total, Progress p) throws IOException {
         File part = new File(c.getFilesDir(), "import.part");
         deleteTree(part);
         if (!part.mkdirs()) {
@@ -417,5 +431,196 @@ final class Installer {
             }
         }
         f.delete();
+    }
+
+    // -- Remove from this phone (the home screen's menu): a system goes, its space with it
+
+    /** What removing one system deletes (removal()), and the bytes that gives back. */
+    static final class Removal {
+        /** Files, and folders that go whole. */
+        final List<File> files = new ArrayList<>();
+        /** The setup's shared part of iOS 26 and the watch goes too: nothing on the phone needs it any more. */
+        boolean shared;
+        long bytes;
+    }
+
+    /**
+     * What removing @os deletes: everything of its own, nothing another system or the app needs.
+     *   iOS 16   files/ios16 (kernel, payload, root disk), a half-made ios16.part, and the phone setup's work folder
+     *            (files/setup/ios16: its downloads, helper jobs and step marks)
+     *   iOS 26   files/ios26 (kernel, firmware, trees, trust cache, ramdisk and disk; where the phone made it, hard
+     *            links into the setup's work folder), the screen check's helper folder (Screen26.jobDir), and its part
+     *            of the work folder (PhoneSetup26.own: downloads, images, disks, helper jobs, logs, step marks)
+     *   watchOS  files/watchos and its part of the work folder
+     * and for each its files beside the app's others (Guest.ownFiles: user disks of every screen with the .old ones an
+     * install kept, the home screen's pictures, the saves' notes, the device trees made from its own).
+     * iOS 26 and the watch share the setup's shared part (PhoneSetup26.SHARED: cloudOS kernel, firmware, ramdisk, trees,
+     * GPU driver, sysroot, Apple's keys). It goes, the whole work folder with it, only when the other is not on the phone
+     * and no setup of it waits for a Resume. Never removed: another system's files, the helper VM (files/helper), what
+     * the GPU check runs on (files/gpucheck, files/vulkan, files/lib, the pass in the "setup" preferences: none of it in
+     * the shared part), files/run with the app's log and QEMU's last words, the app's settings, bundles waiting in the
+     * import folder, and the adb test folders in /data/local/tmp (not the app's). Not on the UI thread: it measures.
+     */
+    static Removal removal(Context c, int os) {
+        Removal r = new Removal();
+        r.files.addAll(Guest.ownFiles(c, os));
+        if (os == Guest.IOS16) {
+            r.files.add(dir(c));
+            r.files.add(new File(c.getFilesDir(), "ios16.part"));
+            r.files.add(PhoneSetup.work(c));
+        } else {
+            boolean watch = os == Guest.WATCH;
+            File home = new File(c.getFilesDir(), watch ? "watchos" : "ios26");
+            // a watch run from the Termux runs' folder (WatchProfile.TEST_DIR, debug) may read SPTM, TXM and the ramdisk
+            // from iOS 26's: those stay for it
+            List<File> keep = new ArrayList<>();
+            if (!watch && WatchProfile.available(c)) {
+                for (String n : WatchProfile.SHARED) {
+                    File f = WatchProfile.part(c, n);
+                    if (home.equals(f.getParentFile())) {
+                        keep.add(f);
+                    }
+                }
+            }
+            File[] kids = home.listFiles();
+            if (keep.isEmpty() || kids == null) {
+                r.files.add(home);
+            } else {
+                for (File k : kids) {
+                    if (!keep.contains(k)) {
+                        r.files.add(k);
+                    }
+                }
+            }
+            if (!watch) {
+                r.files.add(Screen26.jobDir(c));
+            }
+            String other = watch ? PhoneSetup26.IOS26 : PhoneSetup26.WATCH;
+            boolean otherStays = (watch ? Guest.available26(c) : WatchProfile.available(c)) || PhoneSetup26.pending(c, other);
+            if (otherStays) {
+                r.files.addAll(PhoneSetup26.own(c, watch ? PhoneSetup26.WATCH : PhoneSetup26.IOS26));
+            } else {
+                r.shared = PhoneSetup26.work(c).isDirectory();
+                r.files.add(PhoneSetup26.work(c));
+            }
+        }
+        r.bytes = freedBytes(r.files);
+        return r;
+    }
+
+    /**
+     * The bytes deleting @files (folders whole) gives back: the blocks each file holds (sparse files count what they
+     * hold, as du does), and only for a file whose every hard link is among them. The phone's setup links iOS 26's and
+     * the watch's kernel, firmware and ramdisk to its work folder's copies (PhoneSetup26.place): those stay while a link
+     * outside does.
+     */
+    static long freedBytes(List<File> files) {
+        java.util.Map<String, long[]> inodes = new java.util.HashMap<>();     // dev:ino -> {links among them, links, bytes}
+        java.util.Set<String> seen = new java.util.HashSet<>();
+        long dirs = 0;
+        java.util.ArrayDeque<File> todo = new java.util.ArrayDeque<>(files);
+        while (!todo.isEmpty()) {
+            File f = todo.pop();
+            if (!seen.add(f.getAbsolutePath())) {
+                continue;
+            }
+            android.system.StructStat st;
+            try {
+                st = android.system.Os.lstat(f.getPath());
+            } catch (android.system.ErrnoException e) {
+                continue;           // not there
+            }
+            if (android.system.OsConstants.S_ISDIR(st.st_mode)) {
+                dirs += st.st_blocks * 512L;
+                String[] kids = f.list();
+                for (String k : kids == null ? new String[0] : kids) {
+                    todo.push(new File(f, k));
+                }
+                continue;
+            }
+            long[] v = inodes.computeIfAbsent(st.st_dev + ":" + st.st_ino, k -> new long[] {0, st.st_nlink, st.st_blocks * 512L});
+            v[0]++;
+        }
+        long sum = dirs;
+        for (long[] v : inodes.values()) {
+            if (v[0] >= v[1]) {
+                sum += v[2];
+            }
+        }
+        return sum;
+    }
+
+    /**
+     * Ends a helper VM that a dead app process left on a job folder in @f (Helper.endLeftover: the setups' jobs, the
+     * screen check's): it would keep the files it has open, and their space, after they are deleted.
+     */
+    private static void endHelpers(Context c, File f) {
+        File[] dirs = f.listFiles(File::isDirectory);
+        if (dirs == null) {
+            return;
+        }
+        Helper.endLeftover(c, f);
+        for (File d : dirs) {
+            endHelpers(c, d);
+        }
+    }
+
+    /** Why no system can be removed now: one runs or starts, a setup or an import is under way; null when one can. */
+    static String cannotRemove(Context c) {
+        if (Guest.running() || "preparing".equals(Guest.state) || Guest.saving()) {
+            return "Close " + Guest.osName(Guest.os(c)) + " first (side bar > Saves > Save and close)";
+        }
+        if (SetupService.busy()) {
+            return "A setup is running: let it finish, or cancel it in Set up, first";
+        }
+        if (importing) {
+            return "An import is running (Set up): let it finish first";
+        }
+        return null;
+    }
+
+    /**
+     * Removes @os from this phone, where Erase (Guest.erase) only resets it: its files (removal()) and what the app's
+     * preferences keep of it (Guest.forgetSystem; Set up's choice of it, PhoneSetup26.dropWant), so that the home screen
+     * shows it as not installed and Set up installs it afresh. Returns the bytes it gave back, as removal() measured
+     * them. Not on the UI thread.
+     */
+    static long remove(Context c, int os) throws IOException {
+        // the QEMU before may still hold a disk for a few seconds (stop(), the last second of a save and close)
+        if (!Guest.waitEnded(15_000)) {
+            throw new IOException(Guest.osName(Guest.os(c)) + " is still closing: try again in a moment");
+        }
+        String why = cannotRemove(c);
+        if (why != null) {
+            throw new IOException(why);
+        }
+        long free = c.getFilesDir().getUsableSpace();
+        Removal r = removal(c, os);
+        // for the log: what was there, by its path in the app's files
+        StringBuilder what = new StringBuilder();
+        String root = c.getFilesDir().getPath() + "/";
+        for (File f : r.files) {
+            if (f.exists()) {
+                what.append(what.length() > 0 ? " " : "").append(f.getPath().replace(root, ""));
+            }
+            endHelpers(c, f);
+            deleteTree(f);
+        }
+        int left = 0;
+        for (File f : r.files) {
+            left += f.exists() ? 1 : 0;
+        }
+        // their parents, when nothing else is in them
+        new File(c.getFilesDir(), "setup").delete();
+        new File(c.getFilesDir(), "helper-jobs").delete();
+        Guest.forgetSystem(c, os);
+        if (os != Guest.IOS16) {
+            PhoneSetup26.dropWant(c, os == Guest.WATCH ? PhoneSetup26.WATCH : PhoneSetup26.IOS26);
+        }
+        SetupService.forget(c, os == Guest.IOS16 ? "ios16" : "a26");
+        AppLog.note(c, String.format(java.util.Locale.ROOT, "remove %s%s: %.2f GB (%d bytes) given back%s; %.1f GB free before,"
+                + " %.1f after; removed: %s", Guest.osName(os), r.shared ? " with the setup's shared part" : "", r.bytes / 1e9, r.bytes,
+                left > 0 ? ", " + left + " paths could not be deleted" : "", free / 1e9, c.getFilesDir().getUsableSpace() / 1e9, what));
+        return r.bytes;
     }
 }

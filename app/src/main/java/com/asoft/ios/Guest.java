@@ -387,10 +387,73 @@ final class Guest {
      * (its own iPhone, settings, apps and saves).
      */
     private static String diskName(Context c, int forOs) {
-        if (forOs == WATCH) {
-            return "watch-user";
+        String[] n = diskNames(forOs);
+        return forOs == IOS26 && scale26(c) == 2 ? n[1] : n[0];
+    }
+
+    /** Every name diskName gives @forOs: iOS 26 has one per screen scale (3x, then 2x). */
+    private static String[] diskNames(int forOs) {
+        return forOs == WATCH ? new String[] {"watch-user"} : forOs == IOS26 ? new String[] {"ios26-user", "ios26-2x-user"}
+                : new String[] {"ios" + forOs + "-user"};
+    }
+
+    /**
+     * Every file of @forOs's own among the app's files (its install folder is Installer's): what one of its disk names
+     * starts (diskNames: the user disks, one an install kept as .old, the home screen's picture, each save's notes,
+     * which erase deletes for one disk), and the device trees start26 made from its own (tree(): its RAM size, the 2x
+     * screen; iOS 26's AOD tree's too). For Installer.remove.
+     */
+    static List<File> ownFiles(Context c, int forOs) {
+        List<String> starts = new ArrayList<>();
+        for (String d : diskNames(forOs)) {
+            starts.add(d + ".");
         }
-        return forOs == IOS26 && scale26(c) == 2 ? "ios26-2x-user" : "ios" + forOs + "-user";
+        if (forOs == IOS26) {
+            starts.add(DTREE26);
+        } else if (forOs == WATCH) {
+            starts.add(WatchProfile.DTREE);
+        }
+        List<File> out = new ArrayList<>();
+        File[] f = c.getFilesDir().listFiles();
+        for (File x : f == null ? new File[0] : f) {
+            for (String s : starts) {
+                if (x.getName().startsWith(s)) {
+                    out.add(x);
+                    break;
+                }
+            }
+        }
+        return out;
+    }
+
+    /**
+     * After Installer.remove: what the "guest" preferences keep of @forOs goes, each of its disks' marks (a stale quick
+     * save, dirty, checked, a Go back's RAM, Screen26's cache and Auto-Lock marks) and its screen and memory choices, so
+     * that a new install starts from the defaults. When it was the one chosen, the choice goes to a system still on the
+     * phone (iOS 26, the watch, iOS 16; with none, as on a fresh app), its start error with it. "stale-from-log-done"
+     * stays: the app's log still holds the old iOS 16's lines, which must not mark a new one's quick save stale.
+     */
+    static void forgetSystem(Context c, int forOs) {
+        android.content.SharedPreferences.Editor e = c.getSharedPreferences("guest", Context.MODE_PRIVATE).edit();
+        for (String d : diskNames(forOs)) {
+            e.remove(staleKey(d)).remove(dirtyKey(d)).remove(CHECKED + d).remove(keptRamKey(d));
+            Screen26.forget(c, d);
+        }
+        if (forOs == IOS26) {
+            e.remove(SCALE26_KEY).remove(ramKey(IOS26));
+        } else if (forOs == WATCH) {
+            e.remove(ramKey(WATCH));
+        }
+        if (selected(c) == forOs) {
+            int next = available26(c) ? IOS26 : WatchProfile.available(c) ? WATCH : IOS16;
+            if (next == IOS16 && !available(c)) {
+                e.remove("os");
+            } else {
+                e.putInt("os", next);
+            }
+            startError = null;
+        }
+        e.commit();
     }
 
     /**
@@ -413,14 +476,16 @@ final class Guest {
      */
     static int scale26(Context c) {
         android.content.SharedPreferences p = c.getSharedPreferences("guest", Context.MODE_PRIVATE);
-        if (p.contains("ios26-scale")) {
-            return p.getInt("ios26-scale", 2) == 2 ? 2 : 3;
+        if (p.contains(SCALE26_KEY)) {
+            return p.getInt(SCALE26_KEY, 2) == 2 ? 2 : 3;
         }
         return new File(c.getFilesDir(), "ios26-user.qcow2").exists() ? 3 : 2;
     }
 
+    private static final String SCALE26_KEY = "ios26-scale";
+
     static void setScale26(Context c, int scale) {
-        c.getSharedPreferences("guest", Context.MODE_PRIVATE).edit().putInt("ios26-scale", scale == 2 ? 2 : 3).apply();
+        c.getSharedPreferences("guest", Context.MODE_PRIVATE).edit().putInt(SCALE26_KEY, scale == 2 ? 2 : 3).apply();
     }
 
     /**
@@ -440,8 +505,12 @@ final class Guest {
         return forOs == WATCH ? (small ? 2048 : 3072) : (small ? 3072 : 4096);
     }
 
+    private static String ramKey(int forOs) {
+        return forOs == WATCH ? "watch-ram" : "ios26-ram";
+    }
+
     static int ramMiB(Context c, int forOs) {
-        int mib = c.getSharedPreferences("guest", Context.MODE_PRIVATE).getInt(forOs == WATCH ? "watch-ram" : "ios26-ram", ramDefault(c, forOs));
+        int mib = c.getSharedPreferences("guest", Context.MODE_PRIVATE).getInt(ramKey(forOs), ramDefault(c, forOs));
         for (int ok : forOs == WATCH ? RAM_CHOICES_WATCH : RAM_CHOICES_26) {
             if (ok == mib) {
                 return mib;
@@ -452,7 +521,7 @@ final class Guest {
 
     static void setRamMiB(Context c, int forOs, int mib) {
         // a new size: a size accepted by a Go back no longer counts (keptRamKey)
-        c.getSharedPreferences("guest", Context.MODE_PRIVATE).edit().putInt(forOs == WATCH ? "watch-ram" : "ios26-ram", mib)
+        c.getSharedPreferences("guest", Context.MODE_PRIVATE).edit().putInt(ramKey(forOs), mib)
                 .remove(keptRamKey(c, forOs)).apply();
     }
 
@@ -499,7 +568,11 @@ final class Guest {
     }
 
     private static String keptRamKey(Context c, int forOs) {
-        return "kept-ram-" + diskName(c, forOs);
+        return keptRamKey(diskName(c, forOs));
+    }
+
+    private static String keptRamKey(String disk) {
+        return "kept-ram-" + disk;
     }
 
     /**
@@ -914,7 +987,11 @@ final class Guest {
      * loads by itself, or the disk would go back to that save; only goBack loads it, when the user asks.
      */
     private static String staleKey(Context c, int forOs) {
-        return "quick-stale-" + diskName(c, forOs);
+        return staleKey(diskName(c, forOs));
+    }
+
+    private static String staleKey(String disk) {
+        return "quick-stale-" + disk;
     }
 
     static boolean quickStale(Context c, int forOs) {
@@ -1011,7 +1088,11 @@ final class Guest {
     // -- the user disk's health
 
     private static String dirtyKey(Context c, int forOs) {
-        return "dirty-" + diskName(c, forOs);
+        return dirtyKey(diskName(c, forOs));
+    }
+
+    private static String dirtyKey(String disk) {
+        return "dirty-" + disk;
     }
 
     /** Set while QEMU runs on the disk; cleared when the run ends cleanly (save and quit, shutdown, stop + quit). */

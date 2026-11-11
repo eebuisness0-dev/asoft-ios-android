@@ -80,7 +80,10 @@ final class GpuCheck {
      * in here, and that ran every test (device, compute, render, host memory), passes with {@link Result#nosparse}.
      * Anything else stays a fail.
      */
-    static final List<String> FALLBACK_COVERS = java.util.Collections.singletonList(SPARSE_HOST);
+    static final List<String> FALLBACK_COVERS = java.util.Arrays.asList(SPARSE_HOST,
+            // a Turnip with no sparse memory at all (Adreno 660: the sparse tests do not even run): the same
+            // path, which asks the device for none of it (metal2vulkan enables sparse binding only where it is)
+            "sparseBinding", "sparseResidencyBuffer", "a queue that binds sparse memory");
 
     /** The check passed for this build: iOS 26 and watchOS may be downloaded. */
     static boolean passed(Context c) {
@@ -152,13 +155,13 @@ final class GpuCheck {
 
     /**
      * A failed Turnip log that the compatibility mode covers: the probe ended by itself (its "missing:" line, not a
-     * crash or a timeout), ran every test up to the sparse one (gpucheck.c runs them in this order and a sparse
-     * test only after the host-memory one), and every lack it wrote is in {@link #FALLBACK_COVERS}. A failed
+     * crash or a timeout), ran the compute, render and host-memory tests (a sparse test runs only after them, and
+     * only where the driver has sparse binding), and every lack it wrote is in {@link #FALLBACK_COVERS}. A failed
      * compute, render or host-memory test writes a lack of its own, so it keeps the fail.
      */
     private static boolean fallbackPass(List<String> lacks, List<String> tests, boolean probeEnded) {
         return probeEnded && !lacks.isEmpty() && FALLBACK_COVERS.containsAll(lacks)
-                && tests.containsAll(java.util.Arrays.asList("compute", "render", "host memory", "sparse gather"));
+                && tests.containsAll(java.util.Arrays.asList("compute", "render", "host memory"));
     }
 
     /** A lack that rules this phone out with its current driver, in plain words, or null. */

@@ -96,6 +96,22 @@ public class SetupService extends Service {
         return worker != null;
     }
 
+    /**
+     * A system that a finished run of @target ("ios16" or "a26") set up was removed (Installer.remove): the setup
+     * screens stop saying it is set up, and so does the notification the run left.
+     */
+    static void forget(Context c, String target) {
+        if (worker != null || !target.equals(state.target) || !state.finished) {
+            return;
+        }
+        state.finished = false;
+        state.step = "";
+        state.pct = -1;
+        state.text = "";
+        state.items = new ArrayList<>();
+        c.getSystemService(NotificationManager.class).cancel(NOTE);
+    }
+
     @Override
     public IBinder onBind(Intent i) {
         return null;

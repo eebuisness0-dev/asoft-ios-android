@@ -96,6 +96,32 @@ final class Helper {
         return out;
     }
 
+    /** The CPU time @pid and its stubs have used so far, in clock ticks; -1 when /proc does not say. */
+    private static long cpuTicks(int pid) {
+        long sum = 0;
+        boolean any = false;
+        for (int p : family(pid)) {
+            try {
+                String st = new String(java.nio.file.Files.readAllBytes(new File("/proc/" + p + "/stat").toPath()), StandardCharsets.US_ASCII);
+                String[] f = st.substring(st.lastIndexOf(')') + 2).split(" ");
+                sum += Long.parseLong(f[11]) + Long.parseLong(f[12]);      // utime, stime
+                any = true;
+            } catch (IOException | RuntimeException ignored) {
+                // gone
+            }
+        }
+        return any ? sum : -1;
+    }
+
+    /**
+     * A VM that hangs: no console output and next to no CPU time (under a second) in each of this many checks
+     * in a row, half a minute apart. A job that works always burns CPU, even one that prints nothing for half
+     * an hour (the rootfs copy). The VM is ended then, which the caller sees as a failed job: natively it runs
+     * again under TCG (PhoneSetup26.runJob). Before 0.1.5 the setup waited on a hung VM for ever.
+     */
+    private static final int HUNG_CHECKS = 10;
+    private static final long CHECK_MS = 30_000;
+
     private static void signal(int pid, int sig) {
         for (int p : family(pid)) {
             android.os.Process.sendSignal(p, sig);
@@ -227,12 +253,41 @@ final class Helper {
         long at = 0;
         StringBuilder partial = new StringBuilder();
         boolean alive = true;
+        long checkedAt = android.os.SystemClock.elapsedRealtime(), cpuWas = -1, serialWas = 0;
+        int quiet = 0;
         try {
             while (true) {
                 alive = Render.alive(pid);
                 at = follow(serial, at, partial, l, r);
                 if (!alive) {
                     break;
+                }
+                // the hang watch (HUNG_CHECKS): only checks made on time count, so that a phone that slept, or an
+                // app Android froze together with its QEMU, does not read as a hang; a held VM starts over
+                long now = android.os.SystemClock.elapsedRealtime();
+                if (held || now - checkedAt > 2 * CHECK_MS) {
+                    checkedAt = now;
+                    quiet = 0;
+                    cpuWas = cpuTicks(pid);
+                    serialWas = serial.length();
+                } else if (now - checkedAt >= CHECK_MS) {
+                    long cpu = cpuTicks(pid), len = serial.length();
+                    quiet = cpu >= 0 && cpuWas >= 0 && cpu - cpuWas < 100 && len == serialWas ? quiet + 1 : 0;
+                    checkedAt = now;
+                    cpuWas = cpu;
+                    serialWas = len;
+                    if (quiet >= HUNG_CHECKS) {
+                        AppLog.note(c, "helper " + job + ": no output and no CPU time for " + quiet * CHECK_MS / 60_000
+                                + " min: taken for hung, ended");
+                        Render.forceKill(pid);
+                        for (int i = 0; i < 50 && Render.alive(pid); i++) {
+                            Thread.sleep(100);
+                        }
+                        r.rc = -1;
+                        r.last = "the helper VM stopped responding (no output and no CPU time for "
+                                + quiet * CHECK_MS / 60_000 + " minutes)";
+                        break;
+                    }
                 }
                 BooleanSupplier h = hold;
                 boolean want = h != null && h.getAsBoolean();

@@ -53,7 +53,7 @@ final class PhoneSetup26 {
     static final String[][] IOS26_STEPS = {
             {"fetch", "iOS 26.6.2 from Apple, about 10.2 GB"},
             {"decrypt", "Decrypt the iOS images"},
-            {"rootfs", "Copy iOS onto its disk (helper VM)"},
+            {"rootfs", "Copy iOS onto its disk (helper VM, about 30 min)"},
             {"partition", "Partition the disk, prefs and keybag (helper VM)"},
             {"firstboot", "First boot of iOS (its persona files)"},
             {"persona", "Persona and MobileGestalt (helper VM)"},
@@ -68,7 +68,7 @@ final class PhoneSetup26 {
             {"fetch", "watchOS 27.2 from Apple, about 5 GB"},
             {"decrypt", "Decrypt the watchOS image"},
             {"prep", "Watch kernel, device tree and GPU driver (helper VM)"},
-            {"rootfs", "Copy watchOS onto its disk (helper VM)"},
+            {"rootfs", "Copy watchOS onto its disk (helper VM, about 30 min)"},
             {"patches", "Patches, apps and the GPU driver on it (helper VM)"},
             {"firstboot", "First boot of watchOS (until the watch face)"},
             {"activation", "Activation, time zone and region (helper VM)"},
@@ -118,6 +118,52 @@ final class PhoneSetup26 {
     static void setWants(Context c, boolean ios26, boolean watch) {
         c.getSharedPreferences("setup", Context.MODE_PRIVATE).edit().putBoolean("a26-" + IOS26, ios26)
                 .putBoolean("a26-" + WATCH, watch).apply();
+    }
+
+    /** @group was removed from the phone (Installer.remove): Set up no longer counts it as asked for, nor offers its Resume. */
+    static void dropWant(Context c, String group) {
+        c.getSharedPreferences("setup", Context.MODE_PRIVATE).edit().remove("a26-" + group).commit();
+    }
+
+    /** A setup of @group was asked for and has not finished: Resume goes on with it, on the shared part. */
+    static boolean pending(Context c, String group) {
+        return wants(c, group) && !installed(c, group) && work(c).isDirectory();
+    }
+
+    /**
+     * What of the work folder is @group's own, IOS26 or WATCH (never the shared part's, nor the other's): for iOS 26 its
+     * downloads (iphone/), decrypted images (os/), the disks its steps build at the top (root26*.qcow2, root.qcow2) with
+     * their trust caches and hashes (root*.tc, root26.qcow2.hashes); for the watch its folder (watchos/: downloads,
+     * images, kernel, trees, GPU driver copy, disks); for either its helper VM jobs (install/helper/) and their logs
+     * (phone/logs/), by its jobs' names, and its step marks. Installer.remove deletes these, so that Set up installs it
+     * afresh while the shared part stays for the other.
+     */
+    static List<File> own(Context c, String group) {
+        List<File> out = new ArrayList<>();
+        File w = work(c);
+        String jobs;            // the start of its jobs' names (Job)
+        if (IOS26.equals(group)) {
+            out.add(in(c, "iphone"));
+            out.add(in(c, "os"));
+            File[] top = w.listFiles((d, n) -> n.startsWith("root"));
+            for (File f : top == null ? new File[0] : top) {
+                out.add(f);
+            }
+            jobs = "ios26-";
+        } else {
+            out.add(in(c, "watchos"));
+            jobs = "watch-";
+        }
+        for (String rel : new String[] {"phone/logs", "install/helper"}) {
+            File[] l = in(c, rel).listFiles((d, n) -> n.startsWith(jobs));
+            for (File f : l == null ? new File[0] : l) {
+                out.add(f);
+            }
+        }
+        for (String[] s : steps(group)) {
+            out.add(mark(c, group, s[0]));
+        }
+        return out;
     }
 
     // -- space ------------------------------------------------------------------------------------------

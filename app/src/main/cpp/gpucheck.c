@@ -838,7 +838,9 @@ static int check(const char *loader)
         {"shaderDrawParameters", f11.shaderDrawParameters, 0},
         {"shaderFloat16", f12.shaderFloat16, 1},
         {"shaderInt8", f12.shaderInt8, 1},
-        {"storageBuffer8BitAccess", f12.storageBuffer8BitAccess, 1},
+        /* not required: where it is missing metal2vulkan declares no u8[] view of a buffer and moves bytes
+           through its word views (memory/leaf.rs Units::storage_on); Turnip has none on the Adreno 660 */
+        {"storageBuffer8BitAccess", f12.storageBuffer8BitAccess, 0},
         {"timelineSemaphore", f12.timelineSemaphore, 1},
         {"bufferDeviceAddress", f12.bufferDeviceAddress, 1},
         {"descriptorIndexing", f12.descriptorIndexing, 1},

@@ -29,7 +29,7 @@ import java.util.List;
 /**
  * The home screen: the devices on this phone. Each system (iOS 26, iOS 16, watchOS) is its device, drawn with
  * what its screen last showed (DeviceView), its state in a line, and the one thing to do next as its button;
- * what is rarely needed (a boot without the save, its screen and memory, erasing it) is behind its "more"
+ * what is rarely needed (a boot without the save, its screen and memory, erasing or removing it) is behind its "more"
  * corner. Under the devices the few settings of the app itself, and the engine test for comparing phones.
  */
 public class MainActivity extends Activity {
@@ -543,7 +543,7 @@ public class MainActivity extends Activity {
         }
     }
 
-    /** What is rarely needed for one system: a boot without its save, its screen and memory, erasing it. */
+    /** What is rarely needed for one system: a boot without its save, its screen and memory, erasing or removing it. */
     private void showMenu(Panel c) {
         int os = c.os;
         if (!installed(os)) {
@@ -561,12 +561,14 @@ public class MainActivity extends Activity {
             m.getMenu().add(0, 3, 0, "Memory: " + Guest.ramMiB(this, os) / 1024 + " GB");
         }
         m.getMenu().add(0, 4, 0, os == Guest.WATCH ? "Erase the watch…" : "Erase the iPhone…");
+        m.getMenu().add(0, 5, 0, "Remove from this phone…");
         m.setOnMenuItemClickListener(item -> {
             switch (item.getItemId()) {
                 case 1: bootCold(os); break;
                 case 2: chooseScale26(); break;
                 case 3: chooseRam(os); break;
-                default: askErase(os);
+                case 4: askErase(os); break;
+                default: askRemove(os);
             }
             return true;
         });
@@ -607,6 +609,78 @@ public class MainActivity extends Activity {
                 })
                 .setNegativeButton("Cancel", null)
                 .show();
+    }
+
+    /** "12.3 GB", "450 MB": what a removal gives back. */
+    private static String size(long bytes) {
+        return bytes >= 1e9 ? String.format(java.util.Locale.ROOT, "%.1f GB", bytes / 1e9)
+                : String.format(java.util.Locale.ROOT, "%.0f MB", Math.max(1, bytes / 1e6));
+    }
+
+    /**
+     * Remove from this phone: unlike Erase, @os itself goes, with everything of it (Installer.removal), and its space
+     * comes back. The size is measured first (a walk of its files, off the UI thread), then asked.
+     */
+    private void askRemove(int os) {
+        String busy = Installer.cannotRemove(this);
+        if (busy != null) {
+            Toast.makeText(this, busy, Toast.LENGTH_LONG).show();
+            return;
+        }
+        String name = systemName(os);
+        new Thread(() -> {
+            Installer.Removal r = Installer.removal(this, os);
+            runOnUiThread(() -> {
+                if (isFinishing() || isDestroyed()) {
+                    return;
+                }
+                String what = os == Guest.WATCH ? "watchOS itself goes from this phone, with the watch's settings, faces and saves"
+                        : name + " itself goes from this phone, with its settings, installed apps and saves";
+                new AlertDialog.Builder(this)
+                        .setTitle("Remove " + name + " from this phone?")
+                        .setMessage(what + (r.shared ? ", and the files it shared with " + (os == Guest.WATCH ? "iOS 26" : "watchOS")
+                                + ", which nothing else uses now" : "") + ". That frees about " + size(r.bytes) + ".\n\n"
+                                + "To have it again, Set up downloads it from Apple again" + (os == Guest.IOS16 ? " (or your PC sends it)." : "."))
+                        .setPositiveButton("Remove", (d, w) -> removeNow(os))
+                        .setNegativeButton("Cancel", null)
+                        .show();
+            });
+        }, "remove-size").start();
+    }
+
+    private void removeNow(int os) {
+        String busy = Installer.cannotRemove(this);
+        if (busy != null) {
+            Toast.makeText(this, busy, Toast.LENGTH_LONG).show();
+            return;
+        }
+        String name = systemName(os);
+        // in front until the files are gone: nothing starts on them meanwhile
+        AlertDialog wait = new AlertDialog.Builder(this).setMessage("Removing " + name + "…").setCancelable(false).show();
+        new Thread(() -> {
+            String said;
+            boolean done = false;
+            try {
+                said = name + " is removed: " + size(Installer.remove(this, os)) + " free again";
+                done = true;
+            } catch (IOException e) {
+                said = e.getMessage();
+            }
+            String text = said;
+            boolean removed = done;
+            runOnUiThread(() -> {
+                if (isDestroyed()) {
+                    return;
+                }
+                wait.dismiss();
+                Toast.makeText(this, text, Toast.LENGTH_LONG).show();
+                shown = "";
+                refresh();
+                if (removed && !Guest.available(this) && !Guest.available26(this) && !WatchProfile.available(this)) {
+                    startActivity(new Intent(this, SetupActivity.class));   // nothing left: set up first, as on a fresh app
+                }
+            });
+        }, "remove").start();
     }
 
     private void askTurnOff() {

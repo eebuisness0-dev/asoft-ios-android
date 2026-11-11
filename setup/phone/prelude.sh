@@ -35,6 +35,23 @@ step() {
 	. "$A/steps/$1.sh"
 }
 progress() { echo "ASOFT: progress $1 $2"; }
+# copy_watch MOUNT WANT_KB TEXT &: progress lines while a step copies an OS onto the disk mounted at MOUNT, from
+# what is on it so far against WANT_KB (what the copy ends at, measured). The copy is one rsync of half an
+# hour that prints nothing: without these the setup screen stood at 2 % all that time and read as stuck
+# (0.1.4 and before). 3 to 95 %, never backwards; the caller kills it after the step.
+copy_watch() {
+	local m=$1 want=$2 text=$3 used pct last=3
+	while sleep 20; do
+		mountpoint -q "$m" || continue
+		used=$(df -k "$m" 2> /dev/null | awk 'NR == 2 { print $3 }') || continue
+		case $used in ''|*[!0-9]*) continue;; esac
+		pct=$((3 + used * 92 / want))
+		[ "$pct" -le 95 ] || pct=95
+		[ "$pct" -ge "$last" ] || pct=$last
+		last=$pct
+		echo "ASOFT: progress $pct $text ($((used / 1048576)).$((used % 1048576 * 10 / 1048576)) GB so far)"
+	done
+}
 # the new CDHash a dsc-patch.py run printed ("NAME OLD NEW"), edge-patch.py's ("NAME NEW ...")
 new_hash() { grep -E '^dyld_shared_cache_arm64e\.[0-9]+ [0-9a-f]{40} [0-9a-f]{40}$' | awk '{print $3}'; }
 edge_hash() { grep -E '^dyld_shared_cache_arm64e\.[0-9]+ [0-9a-f]{40}( |$)' | awk '{print $2}'; }
