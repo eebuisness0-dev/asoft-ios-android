@@ -85,9 +85,33 @@ final class GpuCheck {
             // path, which asks the device for none of it (metal2vulkan enables sparse binding only where it is)
             "sparseBinding", "sparseResidencyBuffer", "a queue that binds sparse memory");
 
+    /**
+     * What a pass on the phone's own Vulkan driver is good for: this build of the app and this build of the phone's
+     * firmware (a system update can change the driver, so it is checked again).
+     */
+    private static String sysKey(Context c) {
+        return key(c) + "|" + Build.FINGERPRINT;
+    }
+
     /** The check passed for this build: iOS 26 and watchOS may be downloaded. */
     static boolean passed(Context c) {
-        return !turnipOff(c) && key(c).equals(c.getSharedPreferences("setup", Context.MODE_PRIVATE).getString("gpucheck-pass", ""));
+        if (turnipOff(c)) {
+            return false;
+        }
+        android.content.SharedPreferences p = c.getSharedPreferences("setup", Context.MODE_PRIVATE);
+        if (!key(c).equals(p.getString("gpucheck-pass", ""))) {
+            return false;
+        }
+        String sys = p.getString("gpucheck-system", "");
+        return sys.isEmpty() || sys.equals(sysKey(c));
+    }
+
+    /**
+     * The pass for this build came from the phone's own Vulkan driver, not from Turnip (a phone with no Adreno, such
+     * as an Exynos Galaxy with an Xclipse GPU): QEMU then loads the system's libvulkan.so (Guest.start26).
+     */
+    static boolean useSystem(Context c) {
+        return passed(c) && !c.getSharedPreferences("setup", Context.MODE_PRIVATE).getString("gpucheck-system", "").isEmpty();
     }
 
     /**
@@ -104,6 +128,8 @@ final class GpuCheck {
         boolean pass;
         /** A pass in the compatibility mode: Turnip lacks only what {@link #FALLBACK_COVERS} lists. */
         boolean nosparse;
+        /** A pass on the phone's own Vulkan driver (no Adreno, so no Turnip): see {@link #useSystem}. */
+        boolean system;
         boolean ran;
         String summary = "";            // one line for people
         final List<String> missing = new ArrayList<>();
@@ -282,8 +308,10 @@ final class GpuCheck {
             }
             Result r = last(c);
             c.getSharedPreferences("setup", Context.MODE_PRIVATE).edit().putString("gpucheck-pass", r.pass ? key(c) : "")
-                    .putString("gpucheck-nosparse", r.nosparse ? key(c) : "").apply();
-            AppLog.note(c, "gpu check: " + (r.nosparse ? "pass in the compatibility mode (no " + SPARSE_HOST + ")"
+                    .putString("gpucheck-nosparse", r.nosparse ? key(c) : "")
+                    .putString("gpucheck-system", r.system ? sysKey(c) : "").apply();
+            AppLog.note(c, "gpu check: " + (r.system ? "pass on the phone's own Vulkan driver"
+                    : r.nosparse ? "pass in the compatibility mode (no " + SPARSE_HOST + ")"
                     : r.pass ? "pass" : (r.never ? "will not run here: " : "not supported yet: ") + String.join("; ", r.why))
                     + " (turnip " + turnipEnd + ")");
             return r;
@@ -438,6 +466,9 @@ final class GpuCheck {
         // Turnip's own lacks and tests, for the compatibility mode (fallbackPass)
         List<String> lacks = new ArrayList<>(), tests = new ArrayList<>();
         boolean probeEnded = false;
+        // the phone's own driver's probe: it passed with no lack (a phone with no Adreno runs on it, see below)
+        boolean sysPass = false;
+        int sysLacks = 0;
         for (String which : new String[] {"turnip", "system"}) {
             File log = new File(d, which + ".log");
             if (!log.isFile()) {
@@ -452,6 +483,12 @@ final class GpuCheck {
                         sysLines.add(l);
                         if (l.startsWith("gpu: ") && gpu.isEmpty()) {
                             gpu = l.substring(5);
+                        } else if (l.startsWith("driver: ") && driver.isEmpty()) {
+                            driver = l.substring(8);
+                        } else if (l.startsWith("result: ")) {
+                            sysPass = l.endsWith("pass");
+                        } else if (l.startsWith("lacks: ")) {
+                            sysLacks++;
                         }
                         continue;
                     }
@@ -480,12 +517,19 @@ final class GpuCheck {
             r.pass = true;
             r.nosparse = true;
         }
+        // No Adreno, so no Turnip: the phone's own driver, when it passed every test of the probe (the Xclipse 940's
+        // does). Not on an Adreno: there Turnip is the app's own driver and its failure is ours to fix.
+        if (r.ran && !r.pass && !adreno() && !turnipOff(c) && sysPass && sysLacks == 0) {
+            r.pass = true;
+            r.system = true;
+        }
         if (r.ran) {
             judge(c, r, sysLines, adreno() && !turnipOff(c));
             rep.append("\n== verdict\n");
             rep.append(String.format(Locale.ROOT, "ram: %.2f GB (a warning below %.1f for iOS 26, %.1f for watchOS; guest memory iOS 26 %d MiB, watchOS %d MiB)%n",
                     r.ram / 1e9, RAM_IOS26 / 1e9, RAM_WATCH / 1e9, Guest.ramMiB(c, Guest.IOS26), Guest.ramMiB(c, Guest.WATCH)));
-            rep.append("result: ").append(r.nosparse ? "supported in the compatibility mode (no " + SPARSE_HOST
+            rep.append("result: ").append(r.system ? "supported on the phone's own Vulkan driver (not Turnip: QEMU loads the system's libvulkan.so)"
+                    : r.nosparse ? "supported in the compatibility mode (no " + SPARSE_HOST
                     + ": reims' deferred views off, REIMS_VGPU_DEFERRED_VIEWS=0)"
                     : r.pass ? "supported" : r.never ? "will not run on this phone (with its current driver)" : "not supported yet")
                     .append('\n');

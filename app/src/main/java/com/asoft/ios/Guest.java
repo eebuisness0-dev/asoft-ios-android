@@ -2179,7 +2179,14 @@ final class Guest {
         Map<String, String> env = new java.util.HashMap<>(System.getenv());
         Emu.baseEnv(c, links, env);
         env.put("ASOFT_FRAME_FD", String.valueOf(frameFd));
-        env.put("VK_DRIVER_FILES", icd.getPath());
+        if (GpuCheck.useSystem(c)) {
+            // a phone with no Adreno whose own Vulkan driver passed the GPU check (an Xclipse, say): QEMU's
+            // dlopen("libvulkan.so") must find the system's loader, not the app's Khronos one that is for Turnip
+            env.put("LD_LIBRARY_PATH", Emu.linkLibrariesSystemVulkan(c).getPath());
+            AppLog.note(c, "gpu: the phone's own Vulkan driver (not Turnip)");
+        } else {
+            env.put("VK_DRIVER_FILES", icd.getPath());
+        }
         env.put("REIMS_VGPU_LOG", "info");
         env.put("RUST_BACKTRACE", "1");
         env.put("ASOFT_PAGE_BITS", "14");

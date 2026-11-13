@@ -51,6 +51,47 @@ final class Emu {
         return links;
     }
 
+    /**
+     * The same links without the Khronos loader and Turnip's driver (libvulkan.so, libvulkan_freedreno.so): a QEMU
+     * with this as its LD_LIBRARY_PATH that dlopens libvulkan.so gets the phone's own loader and driver
+     * (GpuCheck.useSystem, Guest.start26).
+     */
+    static File linkLibrariesSystemVulkan(Context c) throws IOException {
+        File all = linkLibraries(c);
+        File dir = new File(c.getFilesDir(), "lib-sysvk");
+        if (!dir.isDirectory() && !dir.mkdirs()) {
+            throw new IOException("cannot create " + dir);
+        }
+        new File(dir, "libvulkan.so").delete();
+        new File(dir, "libvulkan_freedreno.so").delete();
+        File[] names = all.listFiles();
+        if (names == null) {
+            throw new IOException("no library links in " + all);
+        }
+        for (File f : names) {
+            String n = f.getName();
+            if (n.equals("libvulkan.so") || n.equals("libvulkan_freedreno.so")) {
+                continue;
+            }
+            File link = new File(dir, n);
+            try {
+                String target = Os.readlink(f.getPath());
+                try {
+                    if (target.equals(Os.readlink(link.getPath()))) {
+                        continue;
+                    }
+                } catch (ErrnoException ignored) {
+                    // no link yet
+                }
+                link.delete();
+                Os.symlink(target, link.getPath());
+            } catch (ErrnoException e) {
+                throw new IOException("symlink " + link, e);
+            }
+        }
+        return dir;
+    }
+
     static String qemuPath(Context c) {
         return c.getApplicationInfo().nativeLibraryDir + "/libqemu.so";
     }
