@@ -65,6 +65,8 @@ jobs:
 
       - name: Build and test
         run: |
+          # gradle.properties names the author's Windows Android Studio JDK; here the runner's JDK 17 is used
+          sed -i '/^org.gradle.java.home=/d' gradle.properties
           chmod +x gradlew
           ./gradlew --no-daemon testDebugUnitTest assembleDebug
 
