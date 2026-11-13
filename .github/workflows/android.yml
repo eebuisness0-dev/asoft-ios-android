@@ -1,0 +1,73 @@
+name: Build APK
+
+# Compiles the app (Java, the C probes, the unit tests) and uploads a debug APK.
+#
+# The QEMU, Turnip and Vulkan-loader libraries (app/src/main/jniLibs*) and the setup files
+# (app/src/main/assets/{helper,xnu,setup}) are not in this repository (.gitignore): the author builds them
+# elsewhere. Without them the APK compiles and installs, but cannot start iOS. To get a runnable APK, give
+# the URL of an APK that has them (a release of the app you already run) as the repository variable
+# BASE_APK_URL (Settings > Secrets and variables > Actions > Variables), or as the input of a manual run.
+# The libraries and assets are copied out of it; the app's own native libraries (render, gpucheck, unpack)
+# are built from source here.
+
+on:
+  workflow_dispatch:
+    inputs:
+      base_apk_url:
+        description: "Optional: URL of an APK to copy the prebuilt libraries and setup files from"
+        required: false
+        default: ""
+  push:
+    branches: [xclipse-system-vulkan]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Install the SDK parts the build names
+        run: |
+          yes | sdkmanager --licenses > /dev/null || true
+          sdkmanager "platforms;android-36" "build-tools;36.0.0" "ndk;29.0.13846066" "cmake;3.22.1"
+
+      - name: Prebuilt libraries and setup files from a base APK (optional)
+        if: ${{ inputs.base_apk_url != '' || vars.BASE_APK_URL != '' }}
+        env:
+          BASE_APK_URL: ${{ inputs.base_apk_url || vars.BASE_APK_URL }}
+        run: |
+          set -eu
+          curl -fL --retry 3 -o base.apk "$BASE_APK_URL"
+          mkdir base
+          unzip -q base.apk 'lib/arm64-v8a/*' -d base
+          unzip -q base.apk 'assets/*' -d base || true
+          mkdir -p app/src/main/jniLibs/arm64-v8a
+          for f in base/lib/arm64-v8a/*.so; do
+            case "$(basename "$f")" in
+              librender.so|libgpucheck.so|libunpack.so) continue ;;   # built from source below
+            esac
+            cp "$f" app/src/main/jniLibs/arm64-v8a/
+          done
+          for d in helper xnu setup; do
+            if [ -d "base/assets/$d" ]; then cp -r "base/assets/$d" app/src/main/assets/; fi
+          done
+          echo "libraries taken from the base APK:"
+          ls app/src/main/jniLibs/arm64-v8a
+          rm -rf base base.apk
+
+      - name: Build and test
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon testDebugUnitTest assembleDebug
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: asoft-ios-debug-apk
+          path: app/build/outputs/apk/debug/*.apk
