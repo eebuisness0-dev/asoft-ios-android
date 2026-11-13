@@ -31,12 +31,13 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - uses: android-actions/setup-android@v3
-
+      # The runner image already has the Android SDK (ANDROID_HOME) and its sdkmanager.
       - name: Install the SDK parts the build names
         run: |
-          yes | sdkmanager --licenses > /dev/null || true
-          sdkmanager "platforms;android-36" "build-tools;36.0.0" "ndk;29.0.13846066" "cmake;3.22.1"
+          SDKM=$(command -v sdkmanager || ls "$ANDROID_HOME"/cmdline-tools/*/bin/sdkmanager | head -1)
+          echo "sdkmanager: $SDKM"
+          yes | "$SDKM" --licenses > /dev/null || true
+          "$SDKM" "platforms;android-36" "build-tools;36.0.0" "ndk;29.0.13846066" "cmake;3.22.1"
 
       - name: Prebuilt libraries and setup files from a base APK (optional)
         if: ${{ inputs.base_apk_url != '' || vars.BASE_APK_URL != '' }}
