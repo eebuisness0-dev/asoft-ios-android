@@ -43,4 +43,14 @@ public class GpuCheckFetchTest {
         assertNull(GpuCheck.framebufferFetchLack(Arrays.<String>asList()));
         assertNotNull(GpuCheck.FRAMEBUFFER_FETCH);
     }
+
+    @Test
+    public void anEngineWithTheUnorderedFetchDoesNotRuleOutADriverWithNeitherExtension() {
+        GpuCheck.unorderedFetchEngine = true;
+        try {
+            assertNull(GpuCheck.framebufferFetchLack(XCLIPSE_940));
+        } finally {
+            GpuCheck.unorderedFetchEngine = false;
+        }
+    }
 }

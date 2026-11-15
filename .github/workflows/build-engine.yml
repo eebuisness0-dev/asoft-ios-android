@@ -1,0 +1,102 @@
+name: Build engine and APK
+
+# Builds libqemu26.so (qemu-sptm + reims-vgpu + metal2vulkan, with the unordered framebuffer fetch that
+# lets a phone like the Xclipse 940 run iOS 26 / watchOS) on a runner, then the APK with it.
+# The engine job's artifact holds no Apple files (it is open-source code), so it is uploaded even from a
+# public repository. The APK job is build-apk.yml (see its header for the private native bundle).
+#
+# The sources: qemu-sptm from alpersamur3, reims-vgpu and metal2vulkan from this account's forks,
+# branch asoft-unordered-fetch (the changes on top of alpersamur3's asoft-android).
+
+on:
+  workflow_dispatch:
+    inputs:
+      variant:
+        description: APK build type
+        type: choice
+        options: [debug, release]
+        default: debug
+  push:
+    branches: [engine-build]
+
+permissions:
+  contents: read
+
+jobs:
+  engine:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/checkout@v4
+        with:
+          repository: alpersamur3/qemu-sptm
+          ref: asoft-android
+          path: src/qemu-sptm
+          fetch-depth: 1
+
+      - uses: actions/checkout@v4
+        with:
+          repository: eebuisness0-dev/reims-vgpu
+          ref: asoft-unordered-fetch
+          path: src/reims-vgpu
+          fetch-depth: 1
+
+      # reims-vgpu's Cargo.toml [patch] points at ../metal2vulkan-win
+      - uses: actions/checkout@v4
+        with:
+          repository: eebuisness0-dev/metal2vulkan
+          ref: asoft-unordered-fetch
+          path: src/metal2vulkan-win
+          fetch-depth: 1
+
+      - name: Host tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ninja-build python3-venv python3-pip pkg-config \
+            libglib2.0-dev libglib2.0-dev-bin flex bison dpkg gcc make git
+
+      - name: Android NDK
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;29.0.13846066"
+          echo "NDK=$ANDROID_HOME/ndk/29.0.13846066" >> "$GITHUB_ENV"
+
+      - name: Rust (the version reims-vgpu pins)
+        run: |
+          cd src/reims-vgpu
+          rustup show active-toolchain || rustup toolchain install "$(grep -oP 'channel\s*=\s*"\K[^"]+' rust-toolchain.toml)" --profile minimal
+
+      - name: Engine
+        env:
+          SRC: ${{ github.workspace }}/src
+          OUT: ${{ github.workspace }}/engine-out
+        run: bash .github/engine/build-engine.sh
+
+      - name: Logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: engine-logs
+          path: |
+            qemu-build/meson-logs/
+            engine-out/*.err
+            engine-out/*.json
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: engine
+          path: engine-out/
+          if-no-files-found: error
+          retention-days: 30
+
+  apk:
+    needs: engine
+    uses: ./.github/workflows/build-apk.yml
+    with:
+      variant: ${{ inputs.variant || 'debug' }}
+      use_engine: true
+    secrets: inherit

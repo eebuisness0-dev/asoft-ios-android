@@ -1,0 +1,161 @@
+name: Build APK
+
+# Builds the app's Java and C (gradle, NDK, CMake) on a GitHub runner.
+#
+# What makes the app work is NOT in this repository: .gitignore keeps out app/src/main/jniLibs
+# (QEMU and Termux libraries), jniLibs26 (libqemu26.so with reims-vgpu + metal2vulkan, Turnip, the
+# Vulkan loader) and assets/{helper,xnu,setup} (what the Apple setup brings). pull-libs.sh,
+# pull-libs26.sh and pull-setup.sh copy them in from the phone, from WSL and from an asoft-ios
+# checkout. A build from this repository alone is an APK with no emulator in it.
+#
+# So the job can take them as one archive, from a private place, through the repository secret
+# NATIVE_BUNDLE_URL (and NATIVE_BUNDLE_TOKEN where the URL needs a bearer token, such as a release
+# asset of a private repository: use its API URL, https://api.github.com/repos/OWNER/REPO/releases/assets/ID).
+# Make the archive on the PC, from this repository's root, in Git Bash, after the pull scripts:
+#
+#   tar -czf native-bundle.tar.gz app/src/main/jniLibs app/src/main/jniLibs26 \
+#       app/src/main/assets/helper app/src/main/assets/xnu app/src/main/assets/setup
+#
+# WARNING: those files include Apple's. This repository is public, and so are its workflow
+# artifacts, so the APK is uploaded only where the repository is private (see the last step).
+# Without the secret the build still runs, and the APK it makes is only a compile check.
+#
+# A release build is signed when ASOFT_KEYSTORE_B64 (the keystore, base64) and ASOFT_KEYSTORE_PASSWORD,
+# ASOFT_KEY_ALIAS and ASOFT_KEY_PASSWORD are set; otherwise it is unsigned (app/build.gradle).
+
+on:
+  push:
+    branches: [main, build-apk-action]
+  workflow_dispatch:
+    inputs:
+      variant:
+        description: Build type
+        type: choice
+        options: [debug, release]
+        default: debug
+      use_engine:
+        description: 'Put in the engine of a Build engine and APK run (use that workflow for this)'
+        type: boolean
+        default: false
+  workflow_call:
+    inputs:
+      variant:
+        type: string
+        default: debug
+      use_engine:
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  apk:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      VARIANT: ${{ inputs.variant || 'debug' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Android SDK pieces app/build.gradle names
+        run: |
+          set -euo pipefail
+          SDKM="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SDKM" --licenses > /dev/null || true
+          # compileSdk 36, ndkVersion 29.0.13846066, cmake 3.22.1
+          "$SDKM" "platforms;android-36" "build-tools;36.0.0" "ndk;29.0.13846066" "cmake;3.22.1"
+
+      - name: Use the runner's JDK
+        # gradle.properties points org.gradle.java.home at Android Studio's JDK on the PC
+        run: sed -i '/^org.gradle.java.home=/d' gradle.properties
+
+      - name: Native libraries and setup assets
+        id: native
+        env:
+          NATIVE_BUNDLE_URL: ${{ secrets.NATIVE_BUNDLE_URL }}
+          NATIVE_BUNDLE_TOKEN: ${{ secrets.NATIVE_BUNDLE_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${NATIVE_BUNDLE_URL:-}" ]; then
+            echo "::warning::NATIVE_BUNDLE_URL is not set: the APK will have no QEMU, Turnip or setup assets (a compile check only)."
+            echo "bundled=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          headers=(-H "Accept: application/octet-stream")
+          if [ -n "${NATIVE_BUNDLE_TOKEN:-}" ]; then
+            headers+=(-H "Authorization: Bearer ${NATIVE_BUNDLE_TOKEN}")
+          fi
+          curl -fsSL "${headers[@]}" "$NATIVE_BUNDLE_URL" -o native-bundle.tar.gz
+          tar -xzf native-bundle.tar.gz
+          rm -f native-bundle.tar.gz
+          ls -la app/src/main/jniLibs26/arm64-v8a 2>/dev/null || echo "::warning::the archive has no jniLibs26/arm64-v8a"
+          echo "bundled=true" >> "$GITHUB_OUTPUT"
+
+      - name: The engine built by build-engine.yml
+        if: inputs.use_engine
+        uses: actions/download-artifact@v4
+        with:
+          name: engine
+          path: engine-out
+
+      - name: Put the engine in
+        if: inputs.use_engine
+        run: |
+          set -euo pipefail
+          mkdir -p app/src/main/jniLibs26/arm64-v8a app/src/main/assets
+          cp engine-out/libqemu26.so app/src/main/jniLibs26/arm64-v8a/libqemu26.so
+          cp engine-out/engine-features.txt app/src/main/assets/engine-features.txt
+          echo "::notice::libqemu26.so needs: $(tr '\n' ' ' < engine-out/needed.txt)"
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Signing key (release only)
+        if: env.VARIANT == 'release'
+        env:
+          KEYSTORE_B64: ${{ secrets.ASOFT_KEYSTORE_B64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ASOFT_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ASOFT_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ASOFT_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -z "${KEYSTORE_B64:-}" ]; then
+            echo "::warning::no ASOFT_KEYSTORE_B64: the release APK will be unsigned."
+            exit 0
+          fi
+          echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/release.keystore"
+          {
+            echo "storeFile=$RUNNER_TEMP/release.keystore"
+            echo "storePassword=$KEYSTORE_PASSWORD"
+            echo "keyAlias=$KEY_ALIAS"
+            echo "keyPassword=$KEY_PASSWORD"
+          } > "$RUNNER_TEMP/asoft-signing.properties"
+          echo "ASOFT_SIGNING=$RUNNER_TEMP/asoft-signing.properties" >> "$GITHUB_ENV"
+
+      - name: Build
+        run: |
+          chmod +x gradlew
+          if [ "$VARIANT" = release ]; then
+            ./gradlew --no-daemon assembleRelease
+          else
+            ./gradlew --no-daemon assembleDebug
+          fi
+
+      - name: Upload the APK
+        # The APK holds Apple's files when the archive was used, and a public repository's artifacts are public.
+        if: steps.native.outputs.bundled != 'true' || github.event.repository.private
+        uses: actions/upload-artifact@v4
+        with:
+          name: asoft-ios-${{ env.VARIANT }}
+          path: app/build/outputs/apk/**/*.apk
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Not uploaded
+        if: steps.native.outputs.bundled == 'true' && !github.event.repository.private
+        run: echo "::warning::The APK was built with the native bundle but not uploaded, because this repository is public and its artifacts are too."

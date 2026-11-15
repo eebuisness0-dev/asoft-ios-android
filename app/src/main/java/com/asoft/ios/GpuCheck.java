@@ -262,6 +262,9 @@ final class GpuCheck {
      * one of them, so a pass would boot iOS 26 into refused pipelines. Null when either is there or the log has no such lines.
      */
     static String framebufferFetchLack(List<String> sysLines) {
+        if (unorderedFetchEngine) {
+            return null;    // the engine reads the framebuffer through unordered input attachments itself
+        }
         boolean noRaster = false, noInterlock = false;
         for (String l : sysLines) {
             if (l.equals("recommended, absent: VK_EXT_rasterization_order_attachment_access")) {
@@ -393,8 +396,29 @@ final class GpuCheck {
 
     static volatile boolean running;
 
+    /**
+     * True when this build's engine (libqemu26.so) carries the unordered framebuffer fetch (metal2vulkan's
+     * UnorderedFetchPolicy::InputAttachments, reims-vgpu's exact_policy): the build workflow writes the asset
+     * engine-features.txt with a line "unordered-fetch" then. A driver with neither ordered form is then not ruled out.
+     */
+    static volatile boolean unorderedFetchEngine;
+
+    private static boolean engineHas(Context c, String feature) {
+        try (java.io.BufferedReader b = new java.io.BufferedReader(new java.io.InputStreamReader(c.getAssets().open("engine-features.txt")))) {
+            for (String l; (l = b.readLine()) != null; ) {
+                if (l.trim().equals(feature)) {
+                    return true;
+                }
+            }
+        } catch (java.io.IOException e) {
+            // no such asset: an engine without it
+        }
+        return false;
+    }
+
     /** Runs the check (blocking, off the main thread): Turnip, then the system driver when it is needed. */
     static Result run(Context c) {
+        unorderedFetchEngine = engineHas(c, "unordered-fetch");
         running = true;
         try {
             File d = dir(c);
