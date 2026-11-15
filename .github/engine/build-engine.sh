@@ -103,3 +103,8 @@ llvm-strip -o "$OUT/libqemu26.so" qemu-system-aarch64
 llvm-readelf -d "$OUT/libqemu26.so" | awk '/NEEDED/ {gsub(/[\[\]]/, "", $5); print $5}' | sort > "$OUT/needed.txt"
 printf 'unordered-fetch\n' > "$OUT/engine-features.txt"
 ls -la "$OUT"
+echo "::group::libqemu26.so needs"
+cat "$OUT/needed.txt"
+echo "::endgroup::"
+echo "unordered-fetch strings in the engine: $(strings -n 8 "$OUT/libqemu26.so" | grep -c 'unordered-fetch' || true)"
+echo "reims rvg_ symbols: $(llvm-nm -D "$OUT/libqemu26.so" 2>/dev/null | grep -c rvg_ || true)"
