@@ -28,6 +28,8 @@ export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$TC/${TRIPLE}${API}-clang
 export CC_aarch64_linux_android=$TC/${TRIPLE}${API}-clang
 export CXX_aarch64_linux_android=$TC/${TRIPLE}${API}-clang++
 export AR_aarch64_linux_android=$TC/llvm-ar
+# the library's inline assembly uses ARMv8.4 atomics (LSE) and RCpc loads: phones of the last years have them
+export RUSTFLAGS="-C target-feature=+lse,+rcpc"
 cargo rustc --release --target $TRIPLE -p reims-vgpu-c --lib \
     --no-default-features --features vulkan --crate-type staticlib \
     --message-format json -- --print native-static-libs > "$OUT/cargo-reims.json" 2> >(tee "$OUT/cargo-reims.err" >&2) || { grep -o '"rendered":"[^"]*"' "$OUT/cargo-reims.json" | head -20; exit 1; }
