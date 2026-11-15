@@ -22,15 +22,15 @@ USR=$SYS/data/data/com.termux/files/usr
 echo "::endgroup::"
 
 echo "::group::reims-vgpu (Vulkan platform) for Android"
-rustup target add $TRIPLE
 cd "$SRC/reims-vgpu"
+rustup target add $TRIPLE   # for the toolchain rust-toolchain.toml pins
 export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$TC/${TRIPLE}${API}-clang
 export CC_aarch64_linux_android=$TC/${TRIPLE}${API}-clang
 export CXX_aarch64_linux_android=$TC/${TRIPLE}${API}-clang++
 export AR_aarch64_linux_android=$TC/llvm-ar
 cargo rustc --release --target $TRIPLE -p reims-vgpu-c --lib \
     --no-default-features --features vulkan --crate-type staticlib \
-    --message-format json -- --print native-static-libs > "$OUT/cargo-reims.json" 2> >(tee "$OUT/cargo-reims.err" >&2)
+    --message-format json -- --print native-static-libs > "$OUT/cargo-reims.json" 2> >(tee "$OUT/cargo-reims.err" >&2) || { grep -o '"rendered":"[^"]*"' "$OUT/cargo-reims.json" | head -20; exit 1; }
 LIBS=$(python3 - "$OUT/cargo-reims.json" <<'PY'
 import sys
 t = open(sys.argv[1]).read()
