@@ -17,7 +17,7 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 echo "::group::Termux libraries"
 SYS=$PWD/sysroot
 mkdir -p "$SYS"
-python3 "$HERE/termux-sysroot.py" "$SYS" glib libpixman libslirp pcre2 libffi libiconv zlib libandroid-shmem
+python3 "$HERE/termux-sysroot.py" "$SYS" glib libpixman libslirp pcre2 libffi libiconv zlib
 USR=$SYS/data/data/com.termux/files/usr
 echo "::endgroup::"
 
@@ -76,11 +76,15 @@ export PKG_CONFIG_LIBDIR=$USR/lib/pkgconfig:$USR/share/pkgconfig:$DIST/lib/pkgco
 export PKG_CONFIG_PATH=
 export AR=$TC/llvm-ar NM=$TC/llvm-nm RANLIB=$TC/llvm-ranlib STRIP=$TC/llvm-strip OBJCOPY=$TC/llvm-objcopy
 export PKG_CONFIG=pkg-config
+# bionic has no librt (nor libutil): meson looks for them, empty archives stand in
+STUBS=$PWD/stubs
+mkdir -p "$STUBS"
+for l in rt util; do printf '!<arch>\n' > "$STUBS/lib$l.a"; done
 mkdir -p qemu-build && cd qemu-build
 "$SRC/qemu-sptm/configure" \
     --cross-prefix="${TRIPLE}-" --cpu=aarch64 \
     --cc="$TC/${TRIPLE}${API}-clang" --cxx="$TC/${TRIPLE}${API}-clang++" --host-cc=gcc \
-    --extra-cflags="-I$USR/include -Wno-error" --extra-ldflags="-L$USR/lib -Wl,-rpath-link,$USR/lib" \
+    --extra-cflags="-I$USR/include -Wno-error" --extra-ldflags="-L$STUBS -L$USR/lib -Wl,-rpath-link,$USR/lib" \
     --target-list=aarch64-softmmu --disable-werror --disable-docs --disable-guest-agent \
     --disable-tools --disable-user --disable-linux-user --disable-bsd-user \
     --disable-gtk --disable-sdl --disable-curses --disable-opengl --disable-vnc \
