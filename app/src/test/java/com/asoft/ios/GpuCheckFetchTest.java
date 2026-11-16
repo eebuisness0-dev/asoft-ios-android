@@ -2,7 +2,9 @@ package com.asoft.ios;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertTrue;
 
 import java.util.Arrays;
 import java.util.List;
@@ -42,5 +44,32 @@ public class GpuCheckFetchTest {
         assertNull(GpuCheck.framebufferFetchLack(Arrays.asList("gpu: x", "result: fail")));
         assertNull(GpuCheck.framebufferFetchLack(Arrays.<String>asList()));
         assertNotNull(GpuCheck.FRAMEBUFFER_FETCH);
+    }
+
+    /** The Xclipse 940's whole log of app 0.1.6 (the user's report): all tests ran and passed, both fetch extensions absent. */
+    private static final List<String> XCLIPSE_940_FULL = Arrays.asList(
+            "gpu: Samsung Xclipse 940", "device api: Vulkan 1.3.304", "device: vkCreateDevice VkResult 0",
+            "recommended, absent: VK_EXT_fragment_shader_interlock",
+            "recommended, absent: VK_EXT_rasterization_order_attachment_access",
+            "test: compute", "compute: 0 of 4096 words wrong", "test: render", "render: 0 of 4096 pixels wrong",
+            "test: host memory", "host import: memory types 0x77 (wanted 0x7)", "host import: memory type 0, flags 0x7",
+            "host memory: 0 of 1048576 words the GPU wrote into the phone's own pages wrong",
+            "test: sparse gather", "sparse gather: 0 of 256 pieces wrong",
+            "test: sparse image", "sparse image: 0 of 16384 texels wrong",
+            "result: pass");
+
+    @Test
+    public void theXclipseDoesNotPassByDefault() {
+        assertFalse(GpuCheck.systemPassOfLog(XCLIPSE_940_FULL));
+        assertFalse(GpuCheck.systemPassOfLog(XCLIPSE_940_FULL, false));
+    }
+
+    @Test
+    public void theExperimentIgnoresTheFetchRuleOnly() {
+        assertTrue(GpuCheck.systemPassOfLog(XCLIPSE_940_FULL, true));
+        // it does not excuse anything else: a wrong render still fails
+        java.util.ArrayList<String> bad = new java.util.ArrayList<>(XCLIPSE_940_FULL);
+        bad.set(bad.indexOf("render: 0 of 4096 pixels wrong"), "render: 17 of 4096 pixels wrong");
+        assertFalse(GpuCheck.systemPassOfLog(bad, true));
     }
 }

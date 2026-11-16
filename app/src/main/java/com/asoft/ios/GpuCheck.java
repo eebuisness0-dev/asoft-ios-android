@@ -216,6 +216,15 @@ final class GpuCheck {
      * the probe did its cache syncs, the engine does none, which is why the route is experimental.
      */
     static boolean systemPassOfLog(List<String> sysLines) {
+        return systemPassOfLog(sysLines, false);
+    }
+
+    /**
+     * {@link #systemPassOfLog(List)}; with @ignoreFetch the missing framebuffer fetch ({@link #framebufferFetchLack}) does
+     * not stop the pass. Experiment only (a debuggable build, {@link #ignoreFramebufferFetch}): metal2vulkan refuses the
+     * draws that read the framebuffer on such a driver, so iOS 26 boots with those blends missing.
+     */
+    static boolean systemPassOfLog(List<String> sysLines, boolean ignoreFetch) {
         List<String> lacks = new ArrayList<>(), tests = new ArrayList<>();
         boolean compute = false, render = false, ended = false, sawDevice = false;
         for (String l : sysLines) {
@@ -237,7 +246,12 @@ final class GpuCheck {
         }
         return ended && sawDevice && compute && render && FALLBACK_COVERS.containsAll(lacks)
                 && tests.containsAll(java.util.Arrays.asList("compute", "render", "host memory"))
-                && framebufferFetchLack(sysLines) == null;
+                && (ignoreFetch || framebufferFetchLack(sysLines) == null);
+    }
+
+    /** A debuggable build (the CI's APK), on which the framebuffer-fetch rule is only a warning (experiment, see systemPassOfLog). */
+    static boolean ignoreFramebufferFetch(Context c) {
+        return (c.getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0;
     }
 
     /** A lack that rules this phone out with its current driver, in plain words, or null. */
@@ -624,7 +638,7 @@ final class GpuCheck {
             r.pass = true;
             r.nosparse = true;
         }
-        if (r.ran && !r.pass && !adreno() && systemPassOfLog(sysLines)) {
+        if (r.ran && !r.pass && !adreno() && systemPassOfLog(sysLines, ignoreFramebufferFetch(c))) {
             // no Adreno, so no Turnip: the phone's own driver passed (experimental, in the compatibility mode)
             r.pass = true;
             r.nosparse = true;
@@ -642,6 +656,10 @@ final class GpuCheck {
                     + ": reims' deferred views off, REIMS_VGPU_DEFERRED_VIEWS=0)"
                     : r.pass ? "supported" : r.never ? "will not run on this phone (with its current driver)" : "not supported yet")
                     .append('\n');
+            if (r.system && framebufferFetchLack(sysLines) != null) {
+                rep.append("note: EXPERIMENT (debug build): this driver cannot read the framebuffer in drawing order, so iOS 26's blends are refused by"
+                        + " the Metal translation: expect missing effects or a broken picture\n");
+            }
             if (r.system && cacheLack != null) {
                 rep.append("note: this driver's shared memory needs cache syncs that the engine does not do, so wrong pictures are possible\n");
             }
