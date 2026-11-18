@@ -107,7 +107,8 @@ jobs:
             fi
             mkdir -p base-apk
             unzip -q base.apk 'lib/arm64-v8a/*' 'assets/*' -d base-apk
-            rm -f base-apk/lib/arm64-v8a/libqemu26.so base.apk
+            # libqemu26.so comes from the engine job; render, gpucheck and unpack are built from this source (CMake)
+            rm -f base-apk/lib/arm64-v8a/{libqemu26,librender,libgpucheck,libunpack}.so base.apk
             mkdir -p app/src/main/jniLibs/arm64-v8a app/src/main/assets
             cp -a base-apk/lib/arm64-v8a/. app/src/main/jniLibs/arm64-v8a/
             cp -a base-apk/assets/. app/src/main/assets/
