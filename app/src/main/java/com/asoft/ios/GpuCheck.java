@@ -92,6 +92,7 @@ final class GpuCheck {
 
     /** The check passed for this build: iOS 26 and watchOS may be downloaded. */
     static boolean passed(Context c) {
+        readEngine(c);
         return !turnipOff(c) && key(c).equals(c.getSharedPreferences("setup", Context.MODE_PRIVATE).getString("gpucheck-pass", ""));
     }
 
@@ -403,6 +404,11 @@ final class GpuCheck {
      */
     static volatile boolean unorderedFetchEngine;
 
+    /** Sets {@link #unorderedFetchEngine} from this build's assets: a restarted process has it false until read. */
+    static void readEngine(Context c) {
+        unorderedFetchEngine = engineHas(c, "unordered-fetch");
+    }
+
     private static boolean engineHas(Context c, String feature) {
         try (java.io.BufferedReader b = new java.io.BufferedReader(new java.io.InputStreamReader(c.getAssets().open("engine-features.txt")))) {
             for (String l; (l = b.readLine()) != null; ) {
@@ -418,7 +424,7 @@ final class GpuCheck {
 
     /** Runs the check (blocking, off the main thread): Turnip, then the system driver when it is needed. */
     static Result run(Context c) {
-        unorderedFetchEngine = engineHas(c, "unordered-fetch");
+        readEngine(c);
         running = true;
         try {
             File d = dir(c);
@@ -577,6 +583,7 @@ final class GpuCheck {
 
     /** The last check's logs as a report, and what it found. */
     static Result last(Context c) {
+        readEngine(c);      // the verdict is rebuilt from the saved logs when the screen opens, without a run
         Result r = new Result();
         File d = dir(c);
         StringBuilder rep = new StringBuilder();
