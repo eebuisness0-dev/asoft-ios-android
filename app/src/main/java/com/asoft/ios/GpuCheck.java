@@ -599,6 +599,7 @@ final class GpuCheck {
                 .append(", ro.hardware.vulkan ").append(prop("ro.hardware.vulkan")).append(", ro.hardware.egl ").append(prop("ro.hardware.egl")).append('\n');
         rep.append("cpu: ").append(Build.SUPPORTED_ABIS[0]).append(", ").append(Runtime.getRuntime().availableProcessors())
                 .append(" cores; native engine needs: ").append(Guest.nativeMissing().isEmpty() ? "all there" : Guest.nativeMissing()).append('\n');
+        rep.append("engine: unordered framebuffer fetch ").append(unorderedFetchEngine ? "yes" : "no").append('\n');
         rep.append("date: ").append(new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss Z", Locale.ROOT).format(new java.util.Date())).append('\n');
         String gpu = "", driver = "", sysDriver = "";
         List<String> sysLines = new ArrayList<>();

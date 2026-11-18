@@ -167,7 +167,7 @@ jobs:
           if [ "$VARIANT" = release ]; then
             ./gradlew --no-daemon assembleRelease
           else
-            ./gradlew --no-daemon assembleDebug
+            ./gradlew --no-daemon assembleDebug -PasoftDev   # com.asoft.ios.dev, beside the installed app
           fi
 
       - name: Upload the APK
