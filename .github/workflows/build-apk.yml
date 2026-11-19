@@ -169,6 +169,19 @@ jobs:
           } > "$RUNNER_TEMP/asoft-signing.properties"
           echo "ASOFT_SIGNING=$RUNNER_TEMP/asoft-signing.properties" >> "$GITHUB_ENV"
 
+      - name: Fixed debug signing key
+        # A runner makes a new debug key every time, and Android will not update an app with an APK signed
+        # by another key (App not installed). A repository may keep one at .github/engine/debug.keystore
+        # (only a private one should: the key is the app's identity on the phone).
+        run: |
+          if [ -f .github/engine/debug.keystore ]; then
+            mkdir -p ~/.android
+            cp .github/engine/debug.keystore ~/.android/debug.keystore
+            echo "::notice::debug APK signed with .github/engine/debug.keystore"
+          else
+            echo "::warning::no .github/engine/debug.keystore: the debug APK gets a new key, so it cannot update an earlier build"
+          fi
+
       - name: Build
         run: |
           chmod +x gradlew
