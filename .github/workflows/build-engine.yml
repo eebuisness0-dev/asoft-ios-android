@@ -16,6 +16,10 @@ on:
         type: choice
         options: [debug, release]
         default: debug
+      symbolize:
+        description: 'Hex addresses (comma separated, from a crash backtrace of this commit) to name in the log'
+        type: string
+        default: ''
   push:
     branches: [engine-build]
 
@@ -72,6 +76,7 @@ jobs:
         env:
           SRC: ${{ github.workspace }}/src
           OUT: ${{ github.workspace }}/engine-out
+          SYMBOLIZE: ${{ inputs.symbolize }}
         run: bash .github/engine/build-engine.sh
 
       - name: Logs on failure

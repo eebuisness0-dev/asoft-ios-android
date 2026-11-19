@@ -127,3 +127,13 @@ cat "$OUT/needed.txt"
 echo "::endgroup::"
 echo "unordered-fetch strings in the engine: $(strings -n 8 "$OUT/libqemu26.so" | grep -c 'unordered-fetch' || true)"
 echo "reims rvg_ symbols: $(llvm-nm -D "$OUT/libqemu26.so" 2>/dev/null | grep -c rvg_ || true)"
+
+echo "engine sha1: $(sha1sum "$OUT/libqemu26.so" | cut -d' ' -f1) $(stat -c %s "$OUT/libqemu26.so") bytes (the crash report names these as: libqemu26.so sha1 ..., N bytes)"
+if [ -n "${SYMBOLIZE:-}" ]; then
+  echo "::group::symbols of the addresses ${SYMBOLIZE}"
+  for a in ${SYMBOLIZE//,/ }; do
+    echo "--- $a"
+    "$TC/llvm-symbolizer" --demangle --inlining --functions=linkage -e qemu-system-aarch64 "$a" | head -12
+  done
+  echo "::endgroup::"
+fi
