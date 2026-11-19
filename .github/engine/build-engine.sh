@@ -17,7 +17,7 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 echo "::group::Termux libraries"
 SYS=$PWD/sysroot
 mkdir -p "$SYS"
-python3 "$HERE/termux-sysroot.py" "$SYS" glib libpixman libslirp pcre2 libffi libiconv zlib
+python3 "$HERE/termux-sysroot.py" "$SYS" glib libpixman libslirp libnettle pcre2 libffi libiconv zlib
 USR=$SYS/data/data/com.termux/files/usr
 echo "::endgroup::"
 
@@ -88,10 +88,11 @@ mkdir -p qemu-build && cd qemu-build
     --target-list=aarch64-softmmu --disable-werror --disable-docs --disable-guest-agent \
     --disable-tools --disable-user --disable-linux-user --disable-bsd-user \
     --disable-gtk --disable-sdl --disable-curses --disable-opengl --disable-vnc \
-    --disable-gnutls --disable-nettle --disable-gcrypt --disable-capstone --disable-libusb \
+    --disable-gnutls --disable-gcrypt --enable-nettle --disable-capstone --disable-libusb \
     --disable-linux-io-uring --disable-vhost-user --disable-vhost-net --disable-vhost-kernel \
     --enable-slirp --enable-reims-vgpu || {
     echo "::error::QEMU configure failed; its config.log follows"; tail -n 80 meson-logs/meson-log.txt 2>/dev/null || true; exit 1; }
+grep -q "CONFIG_NETTLE" config-host.h || { echo "::error::no crypto backend: the guest's AES device would fail every cipher"; exit 1; }
 echo "::endgroup::"
 
 echo "::group::QEMU build"
@@ -102,6 +103,24 @@ llvm-strip -o "$OUT/libqemu26.so" qemu-system-aarch64
 # which libraries it needs at run time: pull-libs.sh puts only these in the APK
 llvm-readelf -d "$OUT/libqemu26.so" | awk '/NEEDED/ {gsub(/[\[\]]/, "", $5); print $5}' | sort > "$OUT/needed.txt"
 printf 'unordered-fetch\n' > "$OUT/engine-features.txt"
+# the Termux libraries it needs (and theirs), named as pull-libs.sh names them: lib_<soname>.so.
+# The APK job adds those its base APK lacks.
+python3 -I - "$OUT/libqemu26.so" "$USR/lib" "$OUT/libs" "$TC/llvm-readelf" <<'PY'
+import os, shutil, subprocess, sys
+exe, lib, out, readelf = sys.argv[1:]
+os.makedirs(out, exist_ok=True)
+seen, todo = set(), [exe]
+while todo:
+    for ln in subprocess.run([readelf, "-d", todo.pop()], capture_output=True, text=True).stdout.splitlines():
+        if "(NEEDED)" in ln:
+            n = ln.split("[")[1].split("]")[0]
+            f = os.path.join(lib, n)
+            if n not in seen and os.path.exists(f):
+                seen.add(n)
+                shutil.copy(os.path.realpath(f), os.path.join(out, f"lib_{n}.so"))
+                todo.append(f)
+print("bundled", len(seen), "Termux libraries")
+PY
 ls -la "$OUT"
 echo "::group::libqemu26.so needs"
 cat "$OUT/needed.txt"

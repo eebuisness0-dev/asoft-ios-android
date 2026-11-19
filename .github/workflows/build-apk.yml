@@ -135,6 +135,14 @@ jobs:
           mkdir -p app/src/main/jniLibs26/arm64-v8a app/src/main/assets
           cp engine-out/libqemu26.so app/src/main/jniLibs26/arm64-v8a/libqemu26.so
           cp engine-out/engine-features.txt app/src/main/assets/engine-features.txt
+          # the Termux libraries the engine needs that the base APK does not have (never replacing one it has)
+          for f in engine-out/libs/*; do
+            n=$(basename "$f")
+            if [ ! -e "app/src/main/jniLibs/arm64-v8a/$n" ]; then
+              cp "$f" "app/src/main/jniLibs/arm64-v8a/$n"
+              echo "::notice::added $n (not in the base APK)"
+            fi
+          done
           echo "::notice::libqemu26.so needs: $(tr '\n' ' ' < engine-out/needed.txt)"
 
       - uses: gradle/actions/setup-gradle@v4
